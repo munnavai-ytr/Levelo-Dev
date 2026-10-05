@@ -26,8 +26,10 @@ CRITICAL GAME REQUIREMENTS:
 
 export async function POST(req: NextRequest) {
   try {
-    // Read user's API key strictly from header (never stored or logged)
-    const apiKey = req.headers.get('x-gemini-key')?.trim() || process.env.GEMINI_API_KEY?.trim();
+    const isProd = process.env.NODE_ENV === 'production';
+    const userApiKey = req.headers.get('x-gemini-key')?.trim();
+    // In production, only use user key from header. In development, allow fallback.
+    const apiKey = isProd ? userApiKey : (userApiKey || process.env.GEMINI_API_KEY?.trim());
 
     if (!apiKey) {
       return new Response(
@@ -54,8 +56,8 @@ export async function POST(req: NextRequest) {
 
     const currentHtml = files?.['index.html'] || '';
 
-    // Build conversation context from last N messages (up to 8)
-    const recentMessages = messages.slice(-8);
+    // Keep last 6 messages to reduce prompt latency while retaining context
+    const recentMessages = messages.slice(-6);
 
     const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
 
@@ -68,9 +70,11 @@ export async function POST(req: NextRequest) {
           parts: [{ text: msg.content }]
         });
       } else if (msg.role === 'assistant') {
+        // Strip fenced code blocks from previous assistant messages: replace with [code omitted]
+        const strippedContent = msg.content.replace(/```[\s\S]*?```/g, '[code omitted]');
         contents.push({
           role: 'model',
-          parts: [{ text: msg.content }]
+          parts: [{ text: strippedContent }]
         });
       }
     }
@@ -92,42 +96,108 @@ export async function POST(req: NextRequest) {
       parts: [{ text: fullLatestUserText }]
     });
 
+    const modelName = model || 'gemini-2.5-flash';
+    const isFlash = modelName.toLowerCase().includes('flash') && !modelName.toLowerCase().includes('lite');
+
+    const baseConfig: any = {
+      systemInstruction: SYSTEM_INSTRUCTION,
+      maxOutputTokens: 8192,
+    };
+
     // Stream the response using generateContentStream
-    const responseStream = await ai.models.generateContentStream({
-      model: model || 'gemini-2.5-flash',
-      contents,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
+    // For flash models (not lite), test with thinkingBudget: 0 to accelerate responses
+    let responseStream: any;
+    if (isFlash) {
+      try {
+        responseStream = await ai.models.generateContentStream({
+          model: modelName,
+          contents,
+          config: {
+            ...baseConfig,
+            thinkingConfig: { thinkingBudget: 0 },
+          }
+        });
+      } catch (err: any) {
+        // Retry once without thinkingConfig if rejected by model API
+        console.warn('thinkingConfig 0 rejected, retrying with standard config:', err?.message);
+        responseStream = await ai.models.generateContentStream({
+          model: modelName,
+          contents,
+          config: baseConfig
+        });
       }
-    });
+    } else {
+      responseStream = await ai.models.generateContentStream({
+        model: modelName,
+        contents,
+        config: baseConfig
+      });
+    }
 
     // Create ReadableStream for SSE
     const stream = new ReadableStream({
       async start(controller) {
         const encoder = new TextEncoder();
+
+        // (a) Send immediate status event
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify({ type: 'status', status: 'connected' })}\n\n`)
+        );
+
+        // Keep proxies alive with heartbeat comment every 15s
+        const heartbeatInterval = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(': heartbeat\n\n'));
+          } catch {
+            clearInterval(heartbeatInterval);
+          }
+        }, 15000);
+
+        // (e) Abort upstream generation when client disconnects
+        let isAborted = false;
+        const abortHandler = () => {
+          isAborted = true;
+          clearInterval(heartbeatInterval);
+          try {
+            controller.close();
+          } catch {}
+        };
+        req.signal.addEventListener('abort', abortHandler);
+
         try {
           for await (const chunk of responseStream) {
+            if (isAborted || req.signal.aborted) break;
             const text = chunk.text;
             if (text) {
               const payload = `data: ${JSON.stringify({ type: 'chunk', text })}\n\n`;
               controller.enqueue(encoder.encode(payload));
             }
           }
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
-          controller.close();
+          if (!isAborted && !req.signal.aborted) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
+          }
         } catch (streamErr: any) {
-          const errMsg = streamErr?.message || 'Streaming failed';
-          const isRateLimit = streamErr?.status === 429 || errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RESOURCE_EXHAUSTED');
-          const isInvalidKey = streamErr?.status === 400 || streamErr?.status === 403 || errMsg.includes('API_KEY_INVALID') || errMsg.includes('API key not valid');
+          if (!isAborted && !req.signal.aborted) {
+            const errMsg = streamErr?.message || 'Streaming failed';
+            const isRateLimit = streamErr?.status === 429 || errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RESOURCE_EXHAUSTED');
+            const isInvalidKey = streamErr?.status === 400 || streamErr?.status === 403 || errMsg.includes('API_KEY_INVALID') || errMsg.includes('API key not valid');
 
-          const errorPayload = {
-            type: 'error',
-            error: errMsg,
-            code: isRateLimit ? 'RATE_LIMIT' : isInvalidKey ? 'INVALID_KEY' : 'GENERIC_ERROR',
-            status: isRateLimit ? 429 : isInvalidKey ? 401 : 500
-          };
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorPayload)}\n\n`));
-          controller.close();
+            const errorPayload = {
+              type: 'error',
+              error: errMsg,
+              code: isRateLimit ? 'RATE_LIMIT' : isInvalidKey ? 'INVALID_KEY' : 'GENERIC_ERROR',
+              status: isRateLimit ? 429 : isInvalidKey ? 401 : 500
+            };
+            try {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorPayload)}\n\n`));
+            } catch {}
+          }
+        } finally {
+          clearInterval(heartbeatInterval);
+          req.signal.removeEventListener('abort', abortHandler);
+          try {
+            controller.close();
+          } catch {}
         }
       }
     });

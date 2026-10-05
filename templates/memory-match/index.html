@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Rune Cards - Memory Match</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="game-container">
+    <div id="header">
+      <div class="stat">MOVES: <span id="moves">0</span></div>
+      <div class="stat">PAIRS: <span id="pairs">0</span> / 8</div>
+      <div class="stat">TIME: <span id="timer">00:00</span></div>
+    </div>
+    <div id="grid" class="card-grid"></div>
+    <div id="footer">
+      <button id="btn-restart" class="restart-btn">RESTART GAME</button>
+    </div>
+  </div>
+  <script src="game.js"></script>
+</body>
+</html>

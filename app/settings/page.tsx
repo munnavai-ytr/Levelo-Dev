@@ -58,9 +58,34 @@ export default function SettingsPage() {
       if (cachedModels) {
         try {
           const parsed = JSON.parse(cachedModels);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setModelsList(parsed);
-            setValidationResult({ status: 'valid', modelCount: parsed.length });
+          const modelsArray = Array.isArray(parsed) ? parsed : parsed.models || [];
+          const timestamp = Array.isArray(parsed) ? 0 : parsed.timestamp || 0;
+
+          if (modelsArray.length > 0) {
+            setModelsList(modelsArray);
+            setValidationResult({ status: 'valid', modelCount: modelsArray.length });
+          }
+
+          // Check if older than 24h (24 * 60 * 60 * 1000 = 86400000ms)
+          const isOlderThan24h = Date.now() - timestamp > 86400000;
+          if (isOlderThan24h && savedKey) {
+            // Revalidate in background silently
+            fetch('/api/gemini/validate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ apiKey: savedKey })
+            })
+              .then((res) => res.json())
+              .then((data) => {
+                if (data.valid && Array.isArray(data.models) && data.models.length > 0) {
+                  setModelsList(data.models);
+                  localStorage.setItem(
+                    STORAGE_KEYS.CACHED_MODELS,
+                    JSON.stringify({ models: data.models, timestamp: Date.now() })
+                  );
+                }
+              })
+              .catch(() => {});
           }
         } catch {}
       }
@@ -99,7 +124,10 @@ export default function SettingsPage() {
         setModelsList(data.models || []);
 
         if (typeof window !== 'undefined') {
-          localStorage.setItem(STORAGE_KEYS.CACHED_MODELS, JSON.stringify(data.models || []));
+          localStorage.setItem(
+            STORAGE_KEYS.CACHED_MODELS, 
+            JSON.stringify({ models: data.models || [], timestamp: Date.now() })
+          );
         }
 
         // If current selectedModel is not in the new list, pick first flash or first available

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Castle Quest - Precision Platformer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="game-container">
+    <div id="hud">
+      <div>COINS: <span id="coins">0</span> / <span id="total-coins">6</span></div>
+      <div>STAGE: <span id="stage">1</span></div>
+      <div>STATUS: <span id="status">EXPLORING</span></div>
+    </div>
+    <canvas id="platform-canvas" width="600" height="380"></canvas>
+    <div id="controls-panel">
+      <div class="dir-group">
+        <button id="btn-left" class="ctl-btn">◀ LEFT</button>
+        <button id="btn-right" class="ctl-btn">RIGHT ▶</button>
+      </div>
+      <button id="btn-jump" class="ctl-btn jump-btn">JUMP (SPACE/UP)</button>
+    </div>
+  </div>
+  <script src="game.js"></script>
+</body>
+</html>

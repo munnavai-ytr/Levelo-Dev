@@ -12,6 +12,9 @@ import {
 } from 'firebase/auth';
 import { 
   getFirestore, 
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   type Firestore, 
   collection, 
   doc, 
@@ -24,11 +27,16 @@ import {
   where, 
   orderBy,
   serverTimestamp,
+  FieldPath,
+  deleteField,
   Timestamp 
 } from 'firebase/firestore';
-import type { GameProject } from './types';
+import type { GameProject, ProjectVersion, ProjectFiles } from './types';
 import { DEFAULT_PHASER_STARTER } from './starter-game';
 import { STORAGE_KEYS, runStorageMigration } from './storage-migration';
+import { enqueuePendingWrite, registerWriteExecutor, type PendingWrite } from './sync-manager';
+
+const isDev = process.env.NODE_ENV !== 'production';
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -57,7 +65,17 @@ if (isFirebaseConfigured && typeof window !== 'undefined') {
   try {
     app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
     auth = getAuth(app);
-    db = getFirestore(app);
+    try {
+      // Enable Firestore offline persistence (persistentLocalCache + persistentMultipleTabManager)
+      // Allows projects to open instantly from local IndexedDB cache and sync in background
+      db = initializeFirestore(app, {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager()
+        })
+      });
+    } catch {
+      db = getFirestore(app);
+    }
     googleProvider = new GoogleAuthProvider();
     googleProvider.setCustomParameters({ prompt: 'select_account' });
   } catch (err) {
@@ -67,9 +85,54 @@ if (isFirebaseConfigured && typeof window !== 'undefined') {
 
 export { app, auth, db, googleProvider };
 
+// Register write executor for background retry of pending writes
+registerWriteExecutor(async (item: PendingWrite): Promise<boolean> => {
+  if (!isFirebaseConfigured || !db) return false;
+  try {
+    if (item.type === 'files') {
+      const { filesToUpdate = {}, deletedFiles = [] } = item.payload;
+      const docRef = doc(db, 'projects', item.projectId);
+      const updates: any = { updatedAt: serverTimestamp() };
+      for (const [name, content] of Object.entries(filesToUpdate)) {
+        const fp = new FieldPath('files', name);
+        updates[fp as any] = content === null || content === undefined ? deleteField() : content;
+      }
+      for (const name of deletedFiles) {
+        updates[new FieldPath('files', name) as any] = deleteField();
+      }
+      await updateDoc(docRef, updates);
+      return true;
+    }
+    if (item.type === 'chat') {
+      const docRef = doc(db, 'projects', item.projectId);
+      await updateDoc(docRef, { chatMessages: item.payload, updatedAt: serverTimestamp() });
+      return true;
+    }
+    if (item.type === 'title') {
+      const docRef = doc(db, 'projects', item.projectId);
+      await updateDoc(docRef, { title: item.payload, updatedAt: serverTimestamp() });
+      return true;
+    }
+    if (item.type === 'thumbnail') {
+      const docRef = doc(db, 'projects', item.projectId);
+      await updateDoc(docRef, { thumbnail: item.payload, updatedAt: serverTimestamp() });
+      return true;
+    }
+    if (item.type === 'version') {
+      const versionDocRef = doc(db, 'projects', item.projectId, 'versions', item.payload.id);
+      await setDoc(versionDocRef, item.payload.docData);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    return false;
+  }
+});
+
 // ==========================================
-// LOCAL STORAGE FALLBACK FOR DEV/DEMO
-// Allows testing full functionality if Firebase credentials are not yet configured
+// LOCAL STORAGE FALLBACK FOR DEV/DEMO ONLY
+// Must ONLY be active when process.env.NODE_ENV !== 'production'
+// In production with missing Firebase env vars, show the setup notice only.
 // ==========================================
 const LOCAL_STORAGE_KEY = STORAGE_KEYS.LOCAL_PROJECTS;
 const LOCAL_USER_KEY = STORAGE_KEYS.DEMO_USER;
@@ -83,6 +146,7 @@ export interface LocalUser {
 
 export const localAuth = {
   getUser: (): LocalUser | null => {
+    if (!isDev) return null; // Never use demo user in production!
     if (typeof window === 'undefined') return null;
     runStorageMigration();
     const raw = localStorage.getItem(LOCAL_USER_KEY);
@@ -94,6 +158,7 @@ export const localAuth = {
     }
   },
   loginDemo: (name = 'Game Developer', email = 'developer@levelo.ai'): LocalUser => {
+    if (!isDev) throw new Error('Local demo login is disabled in production.');
     const user: LocalUser = {
       uid: 'demo_user_local_123',
       displayName: name,
@@ -115,7 +180,7 @@ export const localAuth = {
 
 export const localProjects = {
   getAll: (ownerId: string): GameProject[] => {
-    if (typeof window === 'undefined') return [];
+    if (!isDev || typeof window === 'undefined') return [];
     runStorageMigration();
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (!raw) return [];
@@ -127,7 +192,7 @@ export const localProjects = {
     }
   },
   getById: (id: string): GameProject | null => {
-    if (typeof window === 'undefined') return null;
+    if (!isDev || typeof window === 'undefined') return null;
     runStorageMigration();
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (!raw) return null;
@@ -139,7 +204,7 @@ export const localProjects = {
     }
   },
   save: (project: GameProject) => {
-    if (typeof window === 'undefined') return;
+    if (!isDev || typeof window === 'undefined') return;
     runStorageMigration();
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     let list: GameProject[] = [];
@@ -157,7 +222,7 @@ export const localProjects = {
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(list));
   },
   delete: (id: string) => {
-    if (typeof window === 'undefined') return;
+    if (!isDev || typeof window === 'undefined') return;
     runStorageMigration();
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (!raw) return;
@@ -170,7 +235,7 @@ export const localProjects = {
 };
 
 // ==========================================
-// UNIFIED PROJECT OPERATIONS (FIRESTORE + LOCAL FALLBACK)
+// UNIFIED PROJECT OPERATIONS (FIRESTORE + LOCAL DEV FALLBACK)
 // ==========================================
 
 export async function fetchUserProjects(ownerId: string): Promise<GameProject[]> {
@@ -191,6 +256,8 @@ export async function fetchUserProjects(ownerId: string): Promise<GameProject[]>
           ownerId: data.ownerId,
           title: data.title || 'Untitled Game',
           files: data.files || { 'index.html': DEFAULT_PHASER_STARTER },
+          chatMessages: data.chatMessages || [],
+          thumbnail: data.thumbnail || undefined,
           createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt || new Date().toISOString(),
           updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt || new Date().toISOString()
         });
@@ -202,6 +269,8 @@ export async function fetchUserProjects(ownerId: string): Promise<GameProject[]>
   }
   return localProjects.getAll(ownerId);
 }
+
+export const fetchProjects = fetchUserProjects;
 
 export async function fetchProjectById(id: string): Promise<GameProject | null> {
   if (isFirebaseConfigured && db) {
@@ -216,6 +285,7 @@ export async function fetchProjectById(id: string): Promise<GameProject | null> 
           title: data.title || 'Untitled Game',
           files: data.files || { 'index.html': DEFAULT_PHASER_STARTER },
           chatMessages: data.chatMessages || [],
+          thumbnail: data.thumbnail || undefined,
           createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt || new Date().toISOString(),
           updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt || new Date().toISOString()
         };
@@ -227,21 +297,36 @@ export async function fetchProjectById(id: string): Promise<GameProject | null> 
   return localProjects.getById(id);
 }
 
-export async function createNewProject(ownerId: string, title: string, customHtml?: string): Promise<GameProject> {
+export async function createNewProject(
+  ownerId: string, 
+  title: string, 
+  customHtmlOrFiles?: string | Record<string, string>
+): Promise<GameProject> {
+  let projectFiles: ProjectFiles;
+
+  if (typeof customHtmlOrFiles === 'string') {
+    projectFiles = { 'index.html': customHtmlOrFiles || DEFAULT_PHASER_STARTER };
+  } else if (customHtmlOrFiles && typeof customHtmlOrFiles === 'object') {
+    projectFiles = {
+      'index.html': customHtmlOrFiles['index.html'] || DEFAULT_PHASER_STARTER,
+      ...customHtmlOrFiles
+    };
+  } else {
+    projectFiles = { 'index.html': DEFAULT_PHASER_STARTER };
+  }
+
   const newProject: GameProject = {
     id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'proj_' + Date.now(),
     ownerId,
     title: title.trim() || 'New Phaser Game',
-    files: {
-      'index.html': customHtml || DEFAULT_PHASER_STARTER
-    },
+    files: projectFiles,
     chatMessages: [
       {
         id: 'welcome_' + Date.now(),
         role: 'assistant',
         content: 'Welcome to Levelo! Describe any game mechanic, visual theme, or complete new game you want to build. I will write the code, synthesize audio SFX, and update your game live!',
         timestamp: Date.now(),
-        tags: ['Phaser 3 Engine', 'Ready']
+        tags: ['Levelo Engine', 'Ready']
       }
     ],
     createdAt: new Date().toISOString(),
@@ -260,12 +345,16 @@ export async function createNewProject(ownerId: string, title: string, customHtm
         updatedAt: serverTimestamp()
       });
       return newProject;
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to create project in Firestore:', err);
+      // Enqueue retry
+      enqueuePendingWrite('title', newProject.id, newProject.title, err?.message);
     }
   }
 
-  localProjects.save(newProject);
+  if (isDev) {
+    localProjects.save(newProject);
+  }
   return newProject;
 }
 
@@ -278,39 +367,85 @@ export async function updateProjectChat(id: string, chatMessages: any[]): Promis
         updatedAt: serverTimestamp()
       });
       return;
-    } catch (err) {
-      console.warn('Firestore updateProjectChat failed, persisting locally:', err);
+    } catch (err: any) {
+      console.warn('Firestore updateProjectChat failed, queuing retry:', err);
+      enqueuePendingWrite('chat', id, chatMessages, err?.message);
     }
   }
 
-  const existing = localProjects.getById(id);
-  if (existing) {
-    existing.chatMessages = chatMessages;
-    existing.updatedAt = new Date().toISOString();
-    localProjects.save(existing);
+  if (isDev) {
+    const existing = localProjects.getById(id);
+    if (existing) {
+      existing.chatMessages = chatMessages;
+      existing.updatedAt = new Date().toISOString();
+      localProjects.save(existing);
+    }
   }
 }
 
-export async function updateProjectFiles(id: string, files: Record<string, string>): Promise<void> {
+/**
+ * Updates files in Firestore by merging per file using FieldPath('files', fileName).
+ * Supports deleting files via null value or explicit deletedFiles array.
+ * Never replaces the whole files map; never silently falls back without queuing retry.
+ */
+export async function updateProjectFiles(
+  id: string, 
+  filesToUpdate: Record<string, string | null | undefined>,
+  deletedFiles?: string[]
+): Promise<void> {
   const now = new Date().toISOString();
+
   if (isFirebaseConfigured && db) {
     try {
       const docRef = doc(db, 'projects', id);
-      await updateDoc(docRef, {
-        files,
+      const updates: any = {
         updatedAt: serverTimestamp()
-      });
+      };
+
+      for (const [fileName, content] of Object.entries(filesToUpdate)) {
+        const fp = new FieldPath('files', fileName);
+        if (content === null || content === undefined) {
+          updates[fp as any] = deleteField();
+        } else {
+          updates[fp as any] = content;
+        }
+      }
+
+      if (deletedFiles && deletedFiles.length > 0) {
+        for (const fileName of deletedFiles) {
+          updates[new FieldPath('files', fileName) as any] = deleteField();
+        }
+      }
+
+      await updateDoc(docRef, updates);
       return;
-    } catch (err) {
-      console.warn('Firestore updateDoc failed, persisting locally:', err);
+    } catch (err: any) {
+      console.warn('Firestore updateProjectFiles failed, queuing retry:', err);
+      enqueuePendingWrite('files', id, { filesToUpdate, deletedFiles }, err?.message);
     }
   }
 
-  const existing = localProjects.getById(id);
-  if (existing) {
-    existing.files = { ...existing.files, ...files };
-    existing.updatedAt = now;
-    localProjects.save(existing);
+  // Local fallback (dev only)
+  if (isDev) {
+    const existing = localProjects.getById(id);
+    if (existing) {
+      const updatedFiles = { ...existing.files };
+      for (const [fileName, content] of Object.entries(filesToUpdate)) {
+        if (content === null || content === undefined) {
+          delete updatedFiles[fileName];
+        } else {
+          updatedFiles[fileName] = content;
+        }
+      }
+      if (deletedFiles) {
+        for (const fileName of deletedFiles) {
+          delete updatedFiles[fileName];
+        }
+      }
+      existing.files = updatedFiles;
+      existing.updatedAt = now;
+      localProjects.save(existing);
+    }
   }
 }
 
@@ -324,16 +459,19 @@ export async function renameProject(id: string, newTitle: string): Promise<void>
         updatedAt: serverTimestamp()
       });
       return;
-    } catch (err) {
-      console.warn('Firestore rename failed, persisting locally:', err);
+    } catch (err: any) {
+      console.warn('Firestore rename failed, queuing retry:', err);
+      enqueuePendingWrite('title', id, newTitle, err?.message);
     }
   }
 
-  const existing = localProjects.getById(id);
-  if (existing) {
-    existing.title = newTitle;
-    existing.updatedAt = now;
-    localProjects.save(existing);
+  if (isDev) {
+    const existing = localProjects.getById(id);
+    if (existing) {
+      existing.title = newTitle;
+      existing.updatedAt = now;
+      localProjects.save(existing);
+    }
   }
 }
 
@@ -343,8 +481,193 @@ export async function deleteProject(id: string): Promise<void> {
       const docRef = doc(db, 'projects', id);
       await deleteDoc(docRef);
     } catch (err) {
-      console.warn('Firestore delete failed, deleting locally:', err);
+      console.warn('Firestore delete failed:', err);
     }
   }
-  localProjects.delete(id);
+  if (isDev) {
+    localProjects.delete(id);
+  }
+}
+
+// Calculate JSON payload size of files to handle 1MB Firestore limit gracefully
+export function getFilesPayloadSize(files: Record<string, string>): number {
+  try {
+    return new Blob([JSON.stringify(files)]).size;
+  } catch {
+    return 0;
+  }
+}
+
+// Version History Management
+const LOCAL_VERSIONS_PREFIX = 'levelo_versions_';
+
+export async function createProjectVersion(
+  projectId: string,
+  files: Record<string, string>,
+  label: string,
+  source: 'ai' | 'manual' | 'restore',
+  prompt?: string
+): Promise<ProjectVersion> {
+  const version: ProjectVersion = {
+    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'ver_' + Date.now(),
+    projectId,
+    files: { ...files } as ProjectFiles,
+    label: label.trim() || 'Snapshot',
+    source,
+    prompt: prompt || undefined,
+    createdAt: new Date().toISOString()
+  };
+
+  if (isFirebaseConfigured && db) {
+    try {
+      const versionDocRef = doc(db, 'projects', projectId, 'versions', version.id);
+      await setDoc(versionDocRef, {
+        files: version.files,
+        label: version.label,
+        source: version.source,
+        prompt: version.prompt || null,
+        createdAt: serverTimestamp()
+      });
+      // Automatically keep the latest 50 versions per project
+      pruneOldVersions(projectId).catch(console.warn);
+      return version;
+    } catch (err: any) {
+      console.warn('Firestore createProjectVersion failed, queuing retry:', err);
+      enqueuePendingWrite(
+        'version',
+        projectId,
+        {
+          id: version.id,
+          docData: {
+            files: version.files,
+            label: version.label,
+            source: version.source,
+            prompt: version.prompt || null,
+            createdAt: serverTimestamp()
+          }
+        },
+        err?.message
+      );
+    }
+  }
+
+  // Local storage fallback (dev only)
+  if (isDev && typeof window !== 'undefined') {
+    const key = LOCAL_VERSIONS_PREFIX + projectId;
+    const raw = localStorage.getItem(key);
+    let list: ProjectVersion[] = raw ? JSON.parse(raw) : [];
+    list.unshift(version);
+    if (list.length > 50) list = list.slice(0, 50);
+    localStorage.setItem(key, JSON.stringify(list));
+  }
+
+  return version;
+}
+
+export async function fetchProjectVersions(projectId: string): Promise<ProjectVersion[]> {
+  if (isFirebaseConfigured && db) {
+    try {
+      const versionsCol = collection(db, 'projects', projectId, 'versions');
+      const q = query(versionsCol, orderBy('createdAt', 'desc'));
+      const snap = await getDocs(q);
+      const results: ProjectVersion[] = [];
+      snap.forEach((d) => {
+        const data = d.data();
+        results.push({
+          id: d.id,
+          projectId,
+          files: data.files,
+          label: data.label || 'Snapshot',
+          source: data.source || 'manual',
+          prompt: data.prompt || undefined,
+          createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt || new Date().toISOString()
+        });
+      });
+      return results;
+    } catch (err) {
+      console.warn('Firestore fetchProjectVersions failed, fallback to local:', err);
+    }
+  }
+
+  if (isDev && typeof window !== 'undefined') {
+    const raw = localStorage.getItem(LOCAL_VERSIONS_PREFIX + projectId);
+    if (raw) {
+      try {
+        return JSON.parse(raw);
+      } catch {}
+    }
+  }
+  return [];
+}
+
+export async function pruneOldVersions(projectId: string): Promise<void> {
+  const MAX_VERSIONS = 50;
+  if (isFirebaseConfigured && db) {
+    try {
+      const versionsCol = collection(db, 'projects', projectId, 'versions');
+      const q = query(versionsCol, orderBy('createdAt', 'desc'));
+      const snap = await getDocs(q);
+      if (snap.size > MAX_VERSIONS) {
+        const docsToDelete = snap.docs.slice(MAX_VERSIONS);
+        for (const d of docsToDelete) {
+          await deleteDoc(d.ref);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to prune Firestore versions:', err);
+    }
+  }
+
+  if (isDev && typeof window !== 'undefined') {
+    const key = LOCAL_VERSIONS_PREFIX + projectId;
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      try {
+        let list: ProjectVersion[] = JSON.parse(raw);
+        if (list.length > MAX_VERSIONS) {
+          localStorage.setItem(key, JSON.stringify(list.slice(0, MAX_VERSIONS)));
+        }
+      } catch {}
+    }
+  }
+}
+
+export async function updateProjectThumbnail(id: string, thumbnail: string): Promise<void> {
+  if (isFirebaseConfigured && db) {
+    try {
+      const docRef = doc(db, 'projects', id);
+      await updateDoc(docRef, {
+        thumbnail,
+        updatedAt: serverTimestamp()
+      });
+      return;
+    } catch (err: any) {
+      console.warn('Firestore updateProjectThumbnail failed, queuing retry:', err);
+      enqueuePendingWrite('thumbnail', id, thumbnail, err?.message);
+    }
+  }
+
+  if (isDev) {
+    const existing = localProjects.getById(id);
+    if (existing) {
+      existing.thumbnail = thumbnail;
+      localProjects.save(existing);
+    }
+  }
+}
+
+export async function duplicateProject(
+  sourceId: string, 
+  ownerId: string, 
+  newTitle: string
+): Promise<GameProject> {
+  const source = await fetchProjectById(sourceId);
+  const filesToCopy = source ? source.files : { 'index.html': DEFAULT_PHASER_STARTER };
+  return createNewProject(ownerId, newTitle, filesToCopy);
+}
+
+export async function bulkDeleteProjects(projectIds: string[]): Promise<void> {
+  for (const id of projectIds) {
+    await deleteProject(id);
+  }
 }

@@ -1,0 +1,86 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body {
+  background: #090d16;
+  color: #f1f5f9;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  overflow: hidden;
+  padding: 10px;
+}
+#game-container {
+  display: flex;
+  flex-col;
+  flex-direction: column;
+  align-items: center;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+  max-width: 440px;
+  width: 100%;
+}
+#header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  font-family: monospace;
+  font-size: 14px;
+  font-weight: bold;
+  color: #22c55e;
+  margin-bottom: 12px;
+  text-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
+}
+canvas {
+  background: #020617;
+  border: 2px solid #334155;
+  border-radius: 8px;
+  display: block;
+  max-width: 100%;
+  aspect-ratio: 1 / 1;
+}
+#dpad {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.dpad-row {
+  display: flex;
+  gap: 6px;
+}
+.dpad-btn {
+  width: 48px;
+  height: 48px;
+  background: #1e293b;
+  border: 1px solid #475569;
+  color: #e2e8f0;
+  border-radius: 10px;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: all 0.1s;
+}
+.dpad-btn:active {
+  background: #22c55e;
+  color: #020617;
+  transform: scale(0.92);
+}
+.dpad-btn.center {
+  background: #0f172a;
+  color: #64748b;
+  font-size: 12px;
+}

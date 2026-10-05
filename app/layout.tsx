@@ -1,6 +1,10 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import { ToastProvider } from '@/components/Toast';
+import { CloudSyncBanner } from '@/components/CloudSyncBanner';
+import { NetworkStatusIndicator } from '@/components/NetworkStatusIndicator';
+import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
+import { WebVitals } from '@/app/web-vitals';
 
 export const metadata: Metadata = {
   title: {
@@ -57,7 +61,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className="min-h-screen bg-slate-950 text-slate-100 antialiased selection:bg-indigo-500 selection:text-white" suppressHydrationWarning>
+        <WebVitals />
+        <ServiceWorkerRegister />
+        <NetworkStatusIndicator />
         <ToastProvider>
+          <CloudSyncBanner />
           {children}
         </ToastProvider>
       </body>

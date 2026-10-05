@@ -3,11 +3,17 @@ service cloud.firestore {
   match /databases/{database}/documents {
     // Projects collection
     match /projects/{projectId} {
-      // User must be authenticated
+      // User must be authenticated and owner
       allow read: if request.auth != null && resource.data.ownerId == request.auth.uid;
       allow create: if request.auth != null && request.resource.data.ownerId == request.auth.uid;
       allow update: if request.auth != null && resource.data.ownerId == request.auth.uid && request.resource.data.ownerId == request.auth.uid;
       allow delete: if request.auth != null && resource.data.ownerId == request.auth.uid;
+
+      // Versions subcollection (owner only)
+      match /versions/{versionId} {
+        allow read, write: if request.auth != null && 
+          get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
+      }
     }
   }
 }

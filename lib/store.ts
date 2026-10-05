@@ -58,6 +58,18 @@ interface AppStore {
   setGeminiModel: (model: string) => void;
 }
 
+const getCachedUser = (): AuthUserState | null => {
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem('levelo_cached_auth_user');
+      if (raw) return JSON.parse(raw);
+    } catch {}
+  }
+  return null;
+};
+
+const initialCachedUser = typeof window !== 'undefined' ? getCachedUser() : null;
+
 export const useAppStore = create<AppStore>((set, get) => ({
   // Theme defaults to dark as requested
   theme: 'dark',
@@ -79,10 +91,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
     get().setTheme(next);
   },
 
-  // Auth
-  user: null,
-  isAuthLoading: true,
-  setUser: (user) => set({ user, isAuthLoading: false }),
+  // Auth - initialize with cached user for instant app shell
+  user: initialCachedUser,
+  isAuthLoading: initialCachedUser === null,
+  setUser: (user) => {
+    if (typeof window !== 'undefined') {
+      try {
+        if (user) {
+          localStorage.setItem('levelo_cached_auth_user', JSON.stringify(user));
+        } else {
+          localStorage.removeItem('levelo_cached_auth_user');
+        }
+      } catch {}
+    }
+    set({ user, isAuthLoading: false });
+  },
   setIsAuthLoading: (isAuthLoading) => set({ isAuthLoading }),
 
   // Tabs

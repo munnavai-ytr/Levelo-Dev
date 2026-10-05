@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Cyber Runner - Endless Arcade</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="game-wrapper">
+    <div id="hud">
+      <div class="hud-item">SCORE: <span id="score-val">0</span></div>
+      <div class="hud-item">BEST: <span id="best-val">0</span></div>
+      <div class="hud-item">SPEED: <span id="speed-val">1.0x</span></div>
+    </div>
+    <canvas id="game-canvas" width="800" height="400"></canvas>
+    <div id="touch-controls">
+      <button id="btn-slide" class="touch-btn">SLIDE (DOWN)</button>
+      <button id="btn-jump" class="touch-btn">JUMP (UP/SPACE)</button>
+    </div>
+  </div>
+  <script src="game.js"></script>
+</body>
+</html>

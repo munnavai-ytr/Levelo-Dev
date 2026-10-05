@@ -79,6 +79,10 @@ export function useAuth() {
       }
     } else {
       // In local mode without Firebase credentials
+      if (process.env.NODE_ENV === 'production') {
+        setAuthError('Firebase credentials are required in production.');
+        return;
+      }
       const demoUser = localAuth.loginDemo('Google User', 'creator@levelo.ai');
       setUser(demoUser);
       router.push('/dashboard');
@@ -104,6 +108,10 @@ export function useAuth() {
         throw err;
       }
     } else {
+      if (process.env.NODE_ENV === 'production') {
+        setAuthError('Firebase credentials are required in production.');
+        return;
+      }
       const demoUser = localAuth.loginDemo(email.split('@')[0], email);
       setUser(demoUser);
       router.push('/dashboard');
@@ -129,6 +137,10 @@ export function useAuth() {
         throw err;
       }
     } else {
+      if (process.env.NODE_ENV === 'production') {
+        setAuthError('Firebase credentials are required in production.');
+        return;
+      }
       const demoUser = localAuth.loginDemo(email.split('@')[0], email);
       setUser(demoUser);
       router.push('/dashboard');

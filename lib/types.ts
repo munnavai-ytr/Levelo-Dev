@@ -3,12 +3,23 @@ export interface ProjectFiles {
   [key: string]: string;
 }
 
+export interface ProjectVersion {
+  id: string;
+  projectId: string;
+  files: ProjectFiles;
+  label: string;
+  source: 'ai' | 'manual' | 'restore';
+  prompt?: string;
+  createdAt: any;
+}
+
 export interface GameProject {
   id: string;
   ownerId: string;
   title: string;
   files: ProjectFiles;
   chatMessages?: ChatMessage[];
+  thumbnail?: string;
   createdAt: any;
   updatedAt: any;
 }
@@ -31,4 +42,13 @@ export interface GeminiModelInfo {
   displayName: string;
   description?: string;
   supportedGenerationMethods?: string[];
+}
+
+export interface GameTemplate {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  genre: string;
+  files: ProjectFiles;
 }

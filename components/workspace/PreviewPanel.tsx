@@ -23,9 +23,10 @@ import type { DeviceMode } from '@/lib/types';
 interface PreviewPanelProps {
   htmlCode: string;
   onFixWithAi?: (errorInfo: { message: string; stack?: string }) => void;
+  onCaptureThumbnail?: (thumbnail: string) => void;
 }
 
-export function PreviewPanel({ htmlCode, onFixWithAi }: PreviewPanelProps) {
+export function PreviewPanel({ htmlCode, onFixWithAi, onCaptureThumbnail }: PreviewPanelProps) {
   const { deviceMode, setDeviceMode, isLandscape, toggleOrientation } = useAppStore();
   const [reloadKey, setReloadKey] = useState(0);
   const [showConsole, setShowConsole] = useState(false);
@@ -74,11 +75,17 @@ export function PreviewPanel({ htmlCode, onFixWithAi }: PreviewPanelProps) {
           stack: e.data.stack || ''
         });
       }
+
+      if (e.data.source === 'levelo-preview-thumbnail' && e.data.thumbnail) {
+        if (onCaptureThumbnail) {
+          onCaptureThumbnail(e.data.thumbnail);
+        }
+      }
     };
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, []);
+  }, [onCaptureThumbnail]);
 
   // Clear error whenever code changes or preview reloads
   useEffect(() => {
@@ -112,8 +119,21 @@ export function PreviewPanel({ htmlCode, onFixWithAi }: PreviewPanelProps) {
     return Math.min(1, factorW, factorH);
   }, [deviceMode, targetWidth, targetHeight, containerDimensions]);
 
-  // Inject error capture and console interceptor into iframe code
+  // Inject error capture and console interceptor into iframe code and rewrite known CDNs to local /libs
   const enhancedCode = useMemo(() => {
+    if (!htmlCode) return '';
+
+    // Rewrite known CDN URLs to local self-hosted /libs path at preview time only
+    const processedHtml = htmlCode
+      .replace(
+        /(https?:)?\/\/(cdn\.jsdelivr\.net\/npm\/phaser[^"'>\s]*|cdnjs\.cloudflare\.com\/ajax\/libs\/phaser[^"'>\s]*|unpkg\.com\/phaser[^"'>\s]*)/gi,
+        '/libs/phaser.min.js'
+      )
+      .replace(
+        /(https?:)?\/\/(cdn\.jsdelivr\.net\/npm\/three[^"'>\s]*|cdnjs\.cloudflare\.com\/ajax\/libs\/three\.js[^"'>\s]*|unpkg\.com\/three[^"'>\s]*)/gi,
+        '/libs/three.min.js'
+      );
+
     const bridge = `
       <script>
         (function() {
@@ -160,13 +180,39 @@ export function PreviewPanel({ htmlCode, onFixWithAi }: PreviewPanelProps) {
             const str = Array.from(arguments).map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
             sendError(str);
           };
+
+          // Capture real canvas thumbnail (320px wide, JPEG 0.6)
+          const captureThumbnail = () => {
+            try {
+              const canvasEl = document.querySelector('canvas');
+              if (canvasEl && canvasEl.width > 0 && canvasEl.height > 0) {
+                const targetW = 320;
+                const targetH = Math.max(1, Math.round((canvasEl.height / canvasEl.width) * targetW));
+                const offscreen = document.createElement('canvas');
+                offscreen.width = targetW;
+                offscreen.height = targetH;
+                const offCtx = offscreen.getContext('2d');
+                if (offCtx) {
+                  offCtx.drawImage(canvasEl, 0, 0, targetW, targetH);
+                  const dataUrl = offscreen.toDataURL('image/jpeg', 0.6);
+                  window.parent.postMessage({
+                    source: 'levelo-preview-thumbnail',
+                    thumbnail: dataUrl
+                  }, '*');
+                }
+              }
+            } catch (err) {}
+          };
+
+          setTimeout(captureThumbnail, 1200);
+          window.addEventListener('pointerdown', () => setTimeout(captureThumbnail, 800), { once: true });
         })();
       </script>
     `;
-    if (htmlCode.includes('<head>')) {
-      return htmlCode.replace('<head>', '<head>' + bridge);
+    if (processedHtml.includes('<head>')) {
+      return processedHtml.replace('<head>', '<head>' + bridge);
     }
-    return bridge + htmlCode;
+    return bridge + processedHtml;
   }, [htmlCode]);
 
   const handleReload = () => {

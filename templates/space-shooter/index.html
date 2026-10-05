@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Galaxy Defender - Space Shooter</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="game-container">
+    <div id="hud">
+      <div>SCORE: <span id="score">0</span></div>
+      <div>WAVE: <span id="wave">1</span></div>
+      <div>SHIELDS: <span id="shields">❤️❤️❤️</span></div>
+    </div>
+    <canvas id="shooter-canvas" width="480" height="640"></canvas>
+    <div id="touch-bar">
+      <div id="touch-hint">DRAG TO MOVE · TAP RIGHT TO FIRE</div>
+      <button id="btn-fire" class="fire-btn">FIRE LASER</button>
+    </div>
+  </div>
+  <script src="game.js"></script>
+</body>
+</html>

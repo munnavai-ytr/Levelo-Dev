@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Cyber Snake Arcade</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="game-container">
+    <div id="header">
+      <div class="stat">SCORE: <span id="score">0</span></div>
+      <div class="stat">HIGH: <span id="high-score">0</span></div>
+      <div class="stat">LENGTH: <span id="length">3</span></div>
+    </div>
+    <canvas id="snake-canvas" width="400" height="400"></canvas>
+    <div id="dpad">
+      <div class="dpad-row">
+        <button id="btn-up" class="dpad-btn" aria-label="Up">▲</button>
+      </div>
+      <div class="dpad-row middle">
+        <button id="btn-left" class="dpad-btn" aria-label="Left">◀</button>
+        <button id="btn-center" class="dpad-btn center" aria-label="Action">●</button>
+        <button id="btn-right" class="dpad-btn" aria-label="Right">▶</button>
+      </div>
+      <div class="dpad-row">
+        <button id="btn-down" class="dpad-btn" aria-label="Down">▼</button>
+      </div>
+    </div>
+  </div>
+  <script src="game.js"></script>
+</body>
+</html>
