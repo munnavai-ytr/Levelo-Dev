@@ -5,13 +5,19 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { useAuth } from '@/hooks/use-auth';
-import { fetchProjectById, updateProjectFiles, renameProject, updateProjectThumbnail } from '@/lib/firebase';
+import { 
+  fetchProjectById, 
+  updateProjectFiles, 
+  renameProject, 
+  updateProjectThumbnail 
+} from '@/lib/firebase';
 import { useAppStore } from '@/lib/store';
 import { useToast } from '@/components/Toast';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { PreviewPanel } from '@/components/workspace/PreviewPanel';
 import { ChatPanel } from '@/components/workspace/ChatPanel';
 import { Logo } from '@/components/Logo';
+import type { PlaytestResult } from '@/lib/types';
 import { 
   Gamepad2, 
   ChevronRight, 
@@ -28,7 +34,7 @@ import {
   Edit2
 } from 'lucide-react';
 
-// Dynamic import heavy components to optimize initial bundle size (Item 7)
+// Dynamic import heavy components for fast initial load
 const CodeEditor = dynamic(
   () => import('@/components/workspace/CodeEditor').then((m) => m.CodeEditor),
   {
@@ -72,32 +78,30 @@ export default function WorkspacePage() {
     setMobileTab,
     currentProject, 
     setCurrentProject,
-    updateCurrentHtml,
     isSaving,
     lastSavedAt 
   } = useAppStore();
 
   const [loading, setLoading] = useState(true);
   const [chatCollapsed, setChatCollapsed] = useState(false);
-  const [chatWidth, setChatWidth] = useState(380); // Default desktop chat width in px
+  const [chatWidth, setChatWidth] = useState(380);
   const [isResizing, setIsResizing] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleInput, setTitleInput] = useState('');
 
-  // Track if Code tab has been opened to defer Monaco initialization
+  // Active open file for editor
+  const [activeEditorFile, setActiveEditorFile] = useState<string>('index.html');
   const [hasOpenedCode, setHasOpenedCode] = useState(false);
 
-  // Live code state (synced with index.html)
-  const [liveHtml, setLiveHtml] = useState<string>('');
-
-  // Trigger from error banner ("Fix with AI")
+  // Trigger from error banner ("Fix with AI") or auto-debug loop
   const [externalPromptTrigger, setExternalPromptTrigger] = useState<{
     prompt: string;
     timestamp: number;
     errorContext?: any;
+    isAutoFix?: boolean;
   } | null>(null);
 
-  // Prefetch Monaco in background via requestIdleCallback after workspace loads (Item 6)
+  // Prefetch Monaco in background
   useEffect(() => {
     if (!loading && typeof window !== 'undefined') {
       const prefetchMonaco = () => {
@@ -138,11 +142,7 @@ export default function WorkspacePage() {
         if (active) {
           if (proj) {
             setCurrentProject(proj);
-            const initialCode = proj.files['index.html'] || '';
-            setLiveHtml(initialCode);
             setTitleInput(proj.title);
-
-            // Populate chat messages if stored
             if (proj.chatMessages && proj.chatMessages.length > 0) {
               useAppStore.setState({ chatMessages: proj.chatMessages });
             }
@@ -166,38 +166,90 @@ export default function WorkspacePage() {
     };
   }, [projectId, setCurrentProject, router, showToast]);
 
-  // Handle Code Editor Live Changes
-  const handleCodeChange = (newCode: string) => {
-    setLiveHtml(newCode);
-    updateCurrentHtml(newCode);
+  // Handle Multi-File changes from CodeEditor
+  const handleEditorFilesChange = (updatedFiles: Record<string, string>) => {
+    if (!currentProject) return;
+    setCurrentProject({
+      ...currentProject,
+      files: updatedFiles
+    });
   };
 
-  // Handle Applying AI Generated Files
-  const handleApplyAiFiles = async (newFiles: Record<string, string>) => {
+  // Handle Applying AI Generated Files (upserts + deletions)
+  const handleApplyAiFiles = async (
+    newFiles: Record<string, string>,
+    deletedFiles?: string[]
+  ) => {
     if (!currentProject) return;
-    const updatedHtml = newFiles['index.html'] || liveHtml;
-    setLiveHtml(updatedHtml);
-    updateCurrentHtml(updatedHtml);
+    const merged = { ...currentProject.files, ...newFiles };
+    if (deletedFiles) {
+      for (const d of deletedFiles) {
+        delete merged[d];
+      }
+    }
+    setCurrentProject({
+      ...currentProject,
+      files: merged
+    });
 
     try {
-      await updateProjectFiles(currentProject.id, newFiles);
+      await updateProjectFiles(currentProject.id, newFiles, deletedFiles);
     } catch (err) {
-      console.warn('Failed to persist project files:', err);
+      console.warn('Failed to persist multi-file updates:', err);
     }
   };
 
-  // "Fix with AI" handler from Preview runtime error banner
-  const handleFixWithAi = (errorInfo: { message: string; stack?: string }) => {
+  // File Tree CRUD handlers
+  const handleCreateFile = async (fileName: string, content = '') => {
+    if (!currentProject) return;
+    const updated = { ...currentProject.files, [fileName]: content };
+    setCurrentProject({ ...currentProject, files: updated });
+    setActiveEditorFile(fileName);
+    await updateProjectFiles(currentProject.id, { [fileName]: content });
+  };
+
+  const handleRenameFile = async (oldName: string, newName: string) => {
+    if (!currentProject || oldName === newName) return;
+    const content = currentProject.files[oldName] || '';
+    const updated = { ...currentProject.files };
+    delete updated[oldName];
+    updated[newName] = content;
+    setCurrentProject({ ...currentProject, files: updated });
+    if (activeEditorFile === oldName) {
+      setActiveEditorFile(newName);
+    }
+    await updateProjectFiles(currentProject.id, { [newName]: content }, [oldName]);
+  };
+
+  const handleDeleteFile = async (fileName: string) => {
+    if (!currentProject || fileName === 'index.html') return;
+    const updated = { ...currentProject.files };
+    delete updated[fileName];
+    setCurrentProject({ ...currentProject, files: updated });
+    if (activeEditorFile === fileName) {
+      setActiveEditorFile('index.html');
+    }
+    await updateProjectFiles(currentProject.id, {}, [fileName]);
+  };
+
+  // "Fix with AI" & Auto-Debug Loop handler
+  const handleFixWithAi = (
+    errorInfo: { message: string; stack?: string },
+    isAutoFix = false
+  ) => {
     setExternalPromptTrigger({
       prompt: `Fix this runtime error in the game:\n"${errorInfo.message}"`,
       timestamp: Date.now(),
-      errorContext: errorInfo
+      errorContext: errorInfo,
+      isAutoFix
     });
 
-    if (chatCollapsed) {
+    if (chatCollapsed && !isAutoFix) {
       setChatCollapsed(false);
     }
-    setMobileTab('chat');
+    if (isMobile && !isAutoFix) {
+      setMobileTab('chat');
+    }
   };
 
   // Title renaming inline
@@ -366,7 +418,7 @@ export default function WorkspacePage() {
           {!isMobile && (
             <button
               onClick={() => setChatCollapsed(!chatCollapsed)}
-              className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors"
+              className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
               title={chatCollapsed ? 'Expand Chat Panel' : 'Collapse Chat Panel'}
               aria-label="Toggle chat panel"
             >
@@ -376,7 +428,7 @@ export default function WorkspacePage() {
 
           <button
             onClick={toggleTheme}
-            className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-300 transition-colors"
+            className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-300 transition-colors cursor-pointer"
             title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
             aria-label="Toggle theme"
           >
@@ -385,7 +437,7 @@ export default function WorkspacePage() {
         </div>
       </header>
 
-      {/* Main Workspace Area - ONLY mounts active layout (zero double mounting, Item 14) */}
+      {/* Main Workspace Area - Active Layout Only */}
       <div className="flex-1 flex overflow-hidden relative">
         {!isMobile ? (
           /* ======================================================== */
@@ -422,7 +474,7 @@ export default function WorkspacePage() {
             <div className="flex-1 h-full overflow-hidden bg-slate-950">
               {activeTab === 'preview' && (
                 <PreviewPanel 
-                  htmlCode={liveHtml} 
+                  files={currentProject.files}
                   onFixWithAi={handleFixWithAi}
                   onCaptureThumbnail={handleCaptureThumbnail}
                 />
@@ -430,14 +482,23 @@ export default function WorkspacePage() {
               {activeTab === 'code' && hasOpenedCode && (
                 <CodeEditor
                   projectId={currentProject.id}
-                  initialCode={liveHtml}
-                  onCodeChange={handleCodeChange}
+                  files={currentProject.files}
+                  initialActiveFile={activeEditorFile}
+                  onFilesChange={handleEditorFilesChange}
+                  onActiveFileChange={setActiveEditorFile}
                 />
               )}
               {activeTab === 'files' && (
                 <FilesPanel
                   files={currentProject.files}
                   projectTitle={currentProject.title}
+                  onOpenFile={(fileName) => {
+                    setActiveEditorFile(fileName);
+                    setActiveTab('code');
+                  }}
+                  onCreateFile={handleCreateFile}
+                  onRenameFile={handleRenameFile}
+                  onDeleteFile={handleDeleteFile}
                 />
               )}
             </div>
@@ -459,7 +520,7 @@ export default function WorkspacePage() {
               )}
               {mobileTab === 'preview' && (
                 <PreviewPanel 
-                  htmlCode={liveHtml} 
+                  files={currentProject.files}
                   onFixWithAi={handleFixWithAi}
                   onCaptureThumbnail={handleCaptureThumbnail}
                 />
@@ -467,8 +528,10 @@ export default function WorkspacePage() {
               {mobileTab === 'code' && hasOpenedCode && (
                 <CodeEditor
                   projectId={currentProject.id}
-                  initialCode={liveHtml}
-                  onCodeChange={handleCodeChange}
+                  files={currentProject.files}
+                  initialActiveFile={activeEditorFile}
+                  onFilesChange={handleEditorFilesChange}
+                  onActiveFileChange={setActiveEditorFile}
                 />
               )}
             </div>

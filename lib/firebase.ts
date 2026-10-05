@@ -12,9 +12,6 @@ import {
 } from 'firebase/auth';
 import { 
   getFirestore, 
-  initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
   type Firestore, 
   collection, 
   doc, 
@@ -34,9 +31,6 @@ import {
 import type { GameProject, ProjectVersion, ProjectFiles } from './types';
 import { DEFAULT_PHASER_STARTER } from './starter-game';
 import { STORAGE_KEYS, runStorageMigration } from './storage-migration';
-import { enqueuePendingWrite, registerWriteExecutor, type PendingWrite } from './sync-manager';
-
-const isDev = process.env.NODE_ENV !== 'production';
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -65,17 +59,7 @@ if (isFirebaseConfigured && typeof window !== 'undefined') {
   try {
     app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
     auth = getAuth(app);
-    try {
-      // Enable Firestore offline persistence (persistentLocalCache + persistentMultipleTabManager)
-      // Allows projects to open instantly from local IndexedDB cache and sync in background
-      db = initializeFirestore(app, {
-        localCache: persistentLocalCache({
-          tabManager: persistentMultipleTabManager()
-        })
-      });
-    } catch {
-      db = getFirestore(app);
-    }
+    db = getFirestore(app);
     googleProvider = new GoogleAuthProvider();
     googleProvider.setCustomParameters({ prompt: 'select_account' });
   } catch (err) {
@@ -85,54 +69,9 @@ if (isFirebaseConfigured && typeof window !== 'undefined') {
 
 export { app, auth, db, googleProvider };
 
-// Register write executor for background retry of pending writes
-registerWriteExecutor(async (item: PendingWrite): Promise<boolean> => {
-  if (!isFirebaseConfigured || !db) return false;
-  try {
-    if (item.type === 'files') {
-      const { filesToUpdate = {}, deletedFiles = [] } = item.payload;
-      const docRef = doc(db, 'projects', item.projectId);
-      const updates: any = { updatedAt: serverTimestamp() };
-      for (const [name, content] of Object.entries(filesToUpdate)) {
-        const fp = new FieldPath('files', name);
-        updates[fp as any] = content === null || content === undefined ? deleteField() : content;
-      }
-      for (const name of deletedFiles) {
-        updates[new FieldPath('files', name) as any] = deleteField();
-      }
-      await updateDoc(docRef, updates);
-      return true;
-    }
-    if (item.type === 'chat') {
-      const docRef = doc(db, 'projects', item.projectId);
-      await updateDoc(docRef, { chatMessages: item.payload, updatedAt: serverTimestamp() });
-      return true;
-    }
-    if (item.type === 'title') {
-      const docRef = doc(db, 'projects', item.projectId);
-      await updateDoc(docRef, { title: item.payload, updatedAt: serverTimestamp() });
-      return true;
-    }
-    if (item.type === 'thumbnail') {
-      const docRef = doc(db, 'projects', item.projectId);
-      await updateDoc(docRef, { thumbnail: item.payload, updatedAt: serverTimestamp() });
-      return true;
-    }
-    if (item.type === 'version') {
-      const versionDocRef = doc(db, 'projects', item.projectId, 'versions', item.payload.id);
-      await setDoc(versionDocRef, item.payload.docData);
-      return true;
-    }
-    return false;
-  } catch (err) {
-    return false;
-  }
-});
-
 // ==========================================
-// LOCAL STORAGE FALLBACK FOR DEV/DEMO ONLY
-// Must ONLY be active when process.env.NODE_ENV !== 'production'
-// In production with missing Firebase env vars, show the setup notice only.
+// LOCAL STORAGE FALLBACK FOR DEV/DEMO
+// Allows testing full functionality if Firebase credentials are not yet configured
 // ==========================================
 const LOCAL_STORAGE_KEY = STORAGE_KEYS.LOCAL_PROJECTS;
 const LOCAL_USER_KEY = STORAGE_KEYS.DEMO_USER;
@@ -146,7 +85,6 @@ export interface LocalUser {
 
 export const localAuth = {
   getUser: (): LocalUser | null => {
-    if (!isDev) return null; // Never use demo user in production!
     if (typeof window === 'undefined') return null;
     runStorageMigration();
     const raw = localStorage.getItem(LOCAL_USER_KEY);
@@ -158,7 +96,6 @@ export const localAuth = {
     }
   },
   loginDemo: (name = 'Game Developer', email = 'developer@levelo.ai'): LocalUser => {
-    if (!isDev) throw new Error('Local demo login is disabled in production.');
     const user: LocalUser = {
       uid: 'demo_user_local_123',
       displayName: name,
@@ -180,7 +117,7 @@ export const localAuth = {
 
 export const localProjects = {
   getAll: (ownerId: string): GameProject[] => {
-    if (!isDev || typeof window === 'undefined') return [];
+    if (typeof window === 'undefined') return [];
     runStorageMigration();
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (!raw) return [];
@@ -192,7 +129,7 @@ export const localProjects = {
     }
   },
   getById: (id: string): GameProject | null => {
-    if (!isDev || typeof window === 'undefined') return null;
+    if (typeof window === 'undefined') return null;
     runStorageMigration();
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (!raw) return null;
@@ -204,7 +141,7 @@ export const localProjects = {
     }
   },
   save: (project: GameProject) => {
-    if (!isDev || typeof window === 'undefined') return;
+    if (typeof window === 'undefined') return;
     runStorageMigration();
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     let list: GameProject[] = [];
@@ -222,7 +159,7 @@ export const localProjects = {
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(list));
   },
   delete: (id: string) => {
-    if (!isDev || typeof window === 'undefined') return;
+    if (typeof window === 'undefined') return;
     runStorageMigration();
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (!raw) return;
@@ -235,7 +172,7 @@ export const localProjects = {
 };
 
 // ==========================================
-// UNIFIED PROJECT OPERATIONS (FIRESTORE + LOCAL DEV FALLBACK)
+// UNIFIED PROJECT OPERATIONS (FIRESTORE + LOCAL FALLBACK)
 // ==========================================
 
 export async function fetchUserProjects(ownerId: string): Promise<GameProject[]> {
@@ -345,16 +282,12 @@ export async function createNewProject(
         updatedAt: serverTimestamp()
       });
       return newProject;
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to create project in Firestore:', err);
-      // Enqueue retry
-      enqueuePendingWrite('title', newProject.id, newProject.title, err?.message);
     }
   }
 
-  if (isDev) {
-    localProjects.save(newProject);
-  }
+  localProjects.save(newProject);
   return newProject;
 }
 
@@ -367,34 +300,25 @@ export async function updateProjectChat(id: string, chatMessages: any[]): Promis
         updatedAt: serverTimestamp()
       });
       return;
-    } catch (err: any) {
-      console.warn('Firestore updateProjectChat failed, queuing retry:', err);
-      enqueuePendingWrite('chat', id, chatMessages, err?.message);
+    } catch (err) {
+      console.warn('Firestore updateProjectChat failed, persisting locally:', err);
     }
   }
 
-  if (isDev) {
-    const existing = localProjects.getById(id);
-    if (existing) {
-      existing.chatMessages = chatMessages;
-      existing.updatedAt = new Date().toISOString();
-      localProjects.save(existing);
-    }
+  const existing = localProjects.getById(id);
+  if (existing) {
+    existing.chatMessages = chatMessages;
+    existing.updatedAt = new Date().toISOString();
+    localProjects.save(existing);
   }
 }
 
-/**
- * Updates files in Firestore by merging per file using FieldPath('files', fileName).
- * Supports deleting files via null value or explicit deletedFiles array.
- * Never replaces the whole files map; never silently falls back without queuing retry.
- */
 export async function updateProjectFiles(
   id: string, 
   filesToUpdate: Record<string, string | null | undefined>,
   deletedFiles?: string[]
 ): Promise<void> {
   const now = new Date().toISOString();
-
   if (isFirebaseConfigured && db) {
     try {
       const docRef = doc(db, 'projects', id);
@@ -419,33 +343,29 @@ export async function updateProjectFiles(
 
       await updateDoc(docRef, updates);
       return;
-    } catch (err: any) {
-      console.warn('Firestore updateProjectFiles failed, queuing retry:', err);
-      enqueuePendingWrite('files', id, { filesToUpdate, deletedFiles }, err?.message);
+    } catch (err) {
+      console.warn('Firestore updateDoc failed, persisting locally:', err);
     }
   }
 
-  // Local fallback (dev only)
-  if (isDev) {
-    const existing = localProjects.getById(id);
-    if (existing) {
-      const updatedFiles = { ...existing.files };
-      for (const [fileName, content] of Object.entries(filesToUpdate)) {
-        if (content === null || content === undefined) {
-          delete updatedFiles[fileName];
-        } else {
-          updatedFiles[fileName] = content;
-        }
+  const existing = localProjects.getById(id);
+  if (existing) {
+    const updatedFiles = { ...existing.files };
+    for (const [fileName, content] of Object.entries(filesToUpdate)) {
+      if (content === null || content === undefined) {
+        delete updatedFiles[fileName];
+      } else {
+        updatedFiles[fileName] = content;
       }
-      if (deletedFiles) {
-        for (const fileName of deletedFiles) {
-          delete updatedFiles[fileName];
-        }
-      }
-      existing.files = updatedFiles;
-      existing.updatedAt = now;
-      localProjects.save(existing);
     }
+    if (deletedFiles) {
+      for (const fileName of deletedFiles) {
+        delete updatedFiles[fileName];
+      }
+    }
+    existing.files = updatedFiles;
+    existing.updatedAt = now;
+    localProjects.save(existing);
   }
 }
 
@@ -459,19 +379,16 @@ export async function renameProject(id: string, newTitle: string): Promise<void>
         updatedAt: serverTimestamp()
       });
       return;
-    } catch (err: any) {
-      console.warn('Firestore rename failed, queuing retry:', err);
-      enqueuePendingWrite('title', id, newTitle, err?.message);
+    } catch (err) {
+      console.warn('Firestore rename failed, persisting locally:', err);
     }
   }
 
-  if (isDev) {
-    const existing = localProjects.getById(id);
-    if (existing) {
-      existing.title = newTitle;
-      existing.updatedAt = now;
-      localProjects.save(existing);
-    }
+  const existing = localProjects.getById(id);
+  if (existing) {
+    existing.title = newTitle;
+    existing.updatedAt = now;
+    localProjects.save(existing);
   }
 }
 
@@ -481,12 +398,10 @@ export async function deleteProject(id: string): Promise<void> {
       const docRef = doc(db, 'projects', id);
       await deleteDoc(docRef);
     } catch (err) {
-      console.warn('Firestore delete failed:', err);
+      console.warn('Firestore delete failed, deleting locally:', err);
     }
   }
-  if (isDev) {
-    localProjects.delete(id);
-  }
+  localProjects.delete(id);
 }
 
 // Calculate JSON payload size of files to handle 1MB Firestore limit gracefully
@@ -531,28 +446,13 @@ export async function createProjectVersion(
       // Automatically keep the latest 50 versions per project
       pruneOldVersions(projectId).catch(console.warn);
       return version;
-    } catch (err: any) {
-      console.warn('Firestore createProjectVersion failed, queuing retry:', err);
-      enqueuePendingWrite(
-        'version',
-        projectId,
-        {
-          id: version.id,
-          docData: {
-            files: version.files,
-            label: version.label,
-            source: version.source,
-            prompt: version.prompt || null,
-            createdAt: serverTimestamp()
-          }
-        },
-        err?.message
-      );
+    } catch (err) {
+      console.warn('Firestore createProjectVersion failed, saving locally:', err);
     }
   }
 
-  // Local storage fallback (dev only)
-  if (isDev && typeof window !== 'undefined') {
+  // Local storage fallback
+  if (typeof window !== 'undefined') {
     const key = LOCAL_VERSIONS_PREFIX + projectId;
     const raw = localStorage.getItem(key);
     let list: ProjectVersion[] = raw ? JSON.parse(raw) : [];
@@ -589,7 +489,7 @@ export async function fetchProjectVersions(projectId: string): Promise<ProjectVe
     }
   }
 
-  if (isDev && typeof window !== 'undefined') {
+  if (typeof window !== 'undefined') {
     const raw = localStorage.getItem(LOCAL_VERSIONS_PREFIX + projectId);
     if (raw) {
       try {
@@ -618,7 +518,7 @@ export async function pruneOldVersions(projectId: string): Promise<void> {
     }
   }
 
-  if (isDev && typeof window !== 'undefined') {
+  if (typeof window !== 'undefined') {
     const key = LOCAL_VERSIONS_PREFIX + projectId;
     const raw = localStorage.getItem(key);
     if (raw) {
@@ -641,18 +541,15 @@ export async function updateProjectThumbnail(id: string, thumbnail: string): Pro
         updatedAt: serverTimestamp()
       });
       return;
-    } catch (err: any) {
-      console.warn('Firestore updateProjectThumbnail failed, queuing retry:', err);
-      enqueuePendingWrite('thumbnail', id, thumbnail, err?.message);
+    } catch (err) {
+      console.warn('Firestore updateProjectThumbnail failed, updating locally:', err);
     }
   }
 
-  if (isDev) {
-    const existing = localProjects.getById(id);
-    if (existing) {
-      existing.thumbnail = thumbnail;
-      localProjects.save(existing);
-    }
+  const existing = localProjects.getById(id);
+  if (existing) {
+    existing.thumbnail = thumbnail;
+    localProjects.save(existing);
   }
 }
 

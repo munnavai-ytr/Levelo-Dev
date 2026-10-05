@@ -38,6 +38,7 @@ export default function SettingsPage() {
 
   const [modelsList, setModelsList] = useState<GeminiModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>(geminiModel || 'gemini-2.5-flash');
+  const [autoFix, setAutoFix] = useState<boolean>(true);
 
   // Load saved credentials from browser's localStorage
   useEffect(() => {
@@ -46,6 +47,11 @@ export default function SettingsPage() {
       const savedKey = localStorage.getItem(STORAGE_KEYS.GEMINI_API_KEY) || '';
       const savedModel = localStorage.getItem(STORAGE_KEYS.GEMINI_MODEL) || 'gemini-2.5-flash';
       const cachedModels = localStorage.getItem(STORAGE_KEYS.CACHED_MODELS);
+      const savedAutoFix = localStorage.getItem('levelo_auto_fix_errors');
+
+      if (savedAutoFix !== null) {
+        setAutoFix(savedAutoFix === 'true');
+      }
 
       if (savedKey) {
         setInputKey(savedKey);
@@ -58,34 +64,9 @@ export default function SettingsPage() {
       if (cachedModels) {
         try {
           const parsed = JSON.parse(cachedModels);
-          const modelsArray = Array.isArray(parsed) ? parsed : parsed.models || [];
-          const timestamp = Array.isArray(parsed) ? 0 : parsed.timestamp || 0;
-
-          if (modelsArray.length > 0) {
-            setModelsList(modelsArray);
-            setValidationResult({ status: 'valid', modelCount: modelsArray.length });
-          }
-
-          // Check if older than 24h (24 * 60 * 60 * 1000 = 86400000ms)
-          const isOlderThan24h = Date.now() - timestamp > 86400000;
-          if (isOlderThan24h && savedKey) {
-            // Revalidate in background silently
-            fetch('/api/gemini/validate', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ apiKey: savedKey })
-            })
-              .then((res) => res.json())
-              .then((data) => {
-                if (data.valid && Array.isArray(data.models) && data.models.length > 0) {
-                  setModelsList(data.models);
-                  localStorage.setItem(
-                    STORAGE_KEYS.CACHED_MODELS,
-                    JSON.stringify({ models: data.models, timestamp: Date.now() })
-                  );
-                }
-              })
-              .catch(() => {});
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setModelsList(parsed);
+            setValidationResult({ status: 'valid', modelCount: parsed.length });
           }
         } catch {}
       }
@@ -124,10 +105,7 @@ export default function SettingsPage() {
         setModelsList(data.models || []);
 
         if (typeof window !== 'undefined') {
-          localStorage.setItem(
-            STORAGE_KEYS.CACHED_MODELS, 
-            JSON.stringify({ models: data.models || [], timestamp: Date.now() })
-          );
+          localStorage.setItem(STORAGE_KEYS.CACHED_MODELS, JSON.stringify(data.models || []));
         }
 
         // If current selectedModel is not in the new list, pick first flash or first available
@@ -163,6 +141,15 @@ export default function SettingsPage() {
     setSelectedModel(modelName);
     setGeminiModel(modelName);
     showToast(`Default model updated to ${modelName}`, 'info');
+  };
+
+  const toggleAutoFix = () => {
+    const next = !autoFix;
+    setAutoFix(next);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('levelo_auto_fix_errors', String(next));
+      showToast(`Auto-fix errors ${next ? 'enabled' : 'disabled'}`, 'info');
+    }
   };
 
   const handleClearKey = () => {
@@ -356,6 +343,37 @@ export default function SettingsPage() {
                 <span className="text-[11px] text-slate-600">Awaiting Key Validation</span>
               </div>
             )}
+          </div>
+
+          {/* Auto-fix Errors Preference */}
+          <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-6 shadow-sm space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-indigo-400" />
+                  <span>Auto-fix Errors</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-1 max-w-md leading-relaxed">
+                  Automatically send runtime preview errors and failed playtest health checks to Gemini AI to diagnose and repair issues (up to 3 attempts per build).
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={toggleAutoFix}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  autoFix ? 'bg-indigo-600' : 'bg-slate-700'
+                }`}
+                role="switch"
+                aria-checked={autoFix}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    autoFix ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
           </div>
 
           {/* Phaser 3 Runtime Specs */}

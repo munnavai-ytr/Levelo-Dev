@@ -7,7 +7,8 @@ import { useToast } from '@/components/Toast';
 import { parseAiResponse } from '@/lib/parse-ai-response';
 import { updateProjectChat, createProjectVersion } from '@/lib/firebase';
 import { STORAGE_KEYS, runStorageMigration } from '@/lib/storage-migration';
-import type { ChatMessage } from '@/lib/types';
+import { FileDiffModal } from '@/components/workspace/FileDiffModal';
+import type { ChatMessage, FileChangeSummary, FileDiffData } from '@/lib/types';
 import { 
   Send, 
   Sparkles, 
@@ -21,10 +22,15 @@ import {
   CheckCircle2, 
   Loader2, 
   Zap, 
-  ChevronDown,
-  ChevronRight,
-  Code2,
-  FileCode
+  ChevronDown, 
+  ChevronRight, 
+  Code2, 
+  FileCode,
+  GitCompare,
+  Plus,
+  Minus,
+  HelpCircle,
+  Layers
 } from 'lucide-react';
 
 export const PROMPT_IDEAS = [
@@ -56,28 +62,28 @@ interface ChatMessageItemProps {
   msg: ChatMessage;
   lastFailedPrompt: string | null;
   onRetry: (prompt: string) => void;
+  onOpenFileDiff: (fileName: string, diff: FileDiffData, changeType: 'created' | 'modified' | 'deleted') => void;
 }
 
-// Memoized Chat Message Component for high render performance
+// Memoized Chat Message Component for performance
 export const ChatMessageItem = React.memo(function ChatMessageItem({
   msg,
   lastFailedPrompt,
-  onRetry
+  onRetry,
+  onOpenFileDiff
 }: ChatMessageItemProps) {
-  const [showCode, setShowCode] = useState(false);
-
-  // During streaming, inspect if code is being written
+  const [showRawCode, setShowRawCode] = useState(false);
   const isStreamingWriting = msg.status === 'writing';
 
   const { displayText, isWritingCode, targetFilename, codeLines, extractedCode } = useMemo(() => {
     const raw = msg.content;
-    const codeBlockRegex = /```(?:html|javascript|css)?\s*([^\n]*)\n([\s\S]*)/;
+    const codeBlockRegex = /```(?:([a-zA-Z0-9_\-\.\/]+)(?:\s+([^\n\r]+))?)?\r?\n([\s\S]*)/;
     const match = raw.match(codeBlockRegex);
 
     if (match) {
       const textBefore = raw.substring(0, match.index).trim();
-      const filenameMatch = match[1]?.trim() || 'index.html';
-      const codePart = match[2];
+      const filenameMatch = match[2]?.trim() || match[1]?.trim() || 'index.html';
+      const codePart = match[3];
       const lines = codePart.split('\n').length;
       return {
         displayText: textBefore,
@@ -106,7 +112,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
       )}
 
       <div
-        className={`max-w-[85%] rounded-xl p-3 border leading-relaxed ${
+        className={`max-w-[88%] rounded-xl p-3 border leading-relaxed ${
           msg.role === 'user'
             ? 'bg-indigo-600 text-white border-indigo-500 rounded-br-none shadow-md'
             : msg.status === 'error'
@@ -119,7 +125,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
           <div className="whitespace-pre-wrap">{displayText}</div>
         )}
 
-        {/* While streaming: do NOT render code; show progress shimmer */}
+        {/* Streaming Code Shimmer: Do NOT render raw code; show progress bar */}
         {isStreamingWriting && isWritingCode && (
           <div className="mt-2.5 p-2.5 rounded-lg bg-slate-950 border border-indigo-500/40 space-y-2">
             <div className="flex items-center justify-between text-indigo-300 font-mono text-[11px]">
@@ -129,37 +135,102 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
               </div>
               <span className="text-slate-400">{codeLines} lines</span>
             </div>
-            {/* Shimmer bar */}
             <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden relative">
               <div className="absolute inset-0 bg-gradient-to-r from-transparent via-indigo-500 to-transparent animate-[shimmer_1.5s_infinite] w-full" />
             </div>
           </div>
         )}
 
-        {/* After completion: collapsible code view */}
-        {msg.status === 'done' && isWritingCode && extractedCode && (
+        {/* MULTI-FILE CHANGES CARD */}
+        {msg.changes && (
+          <div className="mt-3 p-2.5 rounded-xl bg-slate-950/90 border border-slate-800 space-y-2">
+            <div className="flex items-center justify-between text-[11px] font-mono font-semibold text-slate-300">
+              <span className="flex items-center gap-1.5">
+                <GitCompare className="w-3.5 h-3.5 text-indigo-400" />
+                <span>File Changes</span>
+              </span>
+              <span className="text-[10px] text-slate-500 font-sans">
+                Click file for diff view
+              </span>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {/* Created Files */}
+              {msg.changes.created.map((file) => (
+                <button
+                  key={file}
+                  onClick={() =>
+                    onOpenFileDiff(
+                      file,
+                      msg.changes?.diffs?.[file] || { original: '', updated: '' },
+                      'created'
+                    )
+                  }
+                  className="px-2 py-0.5 rounded-md bg-emerald-950/80 border border-emerald-800/80 hover:border-emerald-500 text-emerald-300 text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                  title="Click to view diff"
+                >
+                  <Plus className="w-2.5 h-2.5 text-emerald-400" />
+                  <span>{file}</span>
+                </button>
+              ))}
+
+              {/* Modified Files */}
+              {msg.changes.modified.map((file) => (
+                <button
+                  key={file}
+                  onClick={() =>
+                    onOpenFileDiff(
+                      file,
+                      msg.changes?.diffs?.[file] || { original: '', updated: '' },
+                      'modified'
+                    )
+                  }
+                  className="px-2 py-0.5 rounded-md bg-indigo-950/80 border border-indigo-800/80 hover:border-indigo-500 text-indigo-300 text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                  title="Click to view diff"
+                >
+                  <GitCompare className="w-2.5 h-2.5 text-indigo-400" />
+                  <span>{file}</span>
+                </button>
+              ))}
+
+              {/* Deleted Files */}
+              {msg.changes.deleted.map((file) => (
+                <button
+                  key={file}
+                  onClick={() =>
+                    onOpenFileDiff(
+                      file,
+                      msg.changes?.diffs?.[file] || { original: '', updated: '' },
+                      'deleted'
+                    )
+                  }
+                  className="px-2 py-0.5 rounded-md bg-rose-950/80 border border-rose-800/80 hover:border-rose-500 text-rose-300 text-[10px] font-mono flex items-center gap-1 transition-colors line-through cursor-pointer"
+                  title="Click to view diff"
+                >
+                  <Minus className="w-2.5 h-2.5 text-rose-400" />
+                  <span>{file}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Collapsible raw code view after completion */}
+        {msg.status === 'done' && isWritingCode && extractedCode && !msg.changes && (
           <div className="mt-2 pt-2 border-t border-slate-800/80">
             <button
-              onClick={() => setShowCode(!showCode)}
-              className="flex items-center gap-1.5 text-[11px] font-mono text-indigo-400 hover:text-indigo-300 transition-colors"
+              onClick={() => setShowRawCode(!showRawCode)}
+              className="flex items-center gap-1.5 text-[11px] font-mono text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
             >
-              {showCode ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+              {showRawCode ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
               <Code2 className="w-3.5 h-3.5" />
-              <span>{showCode ? 'Hide generated code' : `View generated code (${codeLines} lines)`}</span>
+              <span>{showRawCode ? 'Hide generated code' : `View generated code (${codeLines} lines)`}</span>
             </button>
-            {showCode && (
+            {showRawCode && (
               <pre className="mt-2 p-2 bg-slate-950 rounded-lg border border-slate-800 text-[10px] font-mono text-slate-300 overflow-x-auto max-h-48 scrollbar-thin">
                 {extractedCode}
               </pre>
             )}
-          </div>
-        )}
-
-        {/* Applied files pill */}
-        {msg.appliedFiles && msg.appliedFiles.length > 0 && (
-          <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center gap-2 text-[11px] text-emerald-400 font-mono">
-            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Applied changes to {msg.appliedFiles.join(', ')}</span>
           </div>
         )}
 
@@ -212,10 +283,15 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
 interface ChatPanelProps {
   projectId: string;
   projectFiles: Record<string, string>;
-  onApplyFiles: (newFiles: Record<string, string>) => Promise<void>;
+  onApplyFiles: (newFiles: Record<string, string>, deletedFiles?: string[]) => Promise<void>;
   onBuildFinished?: () => void;
   onVersionCreated?: () => void;
-  externalPromptTrigger?: { prompt: string; timestamp: number; errorContext?: any } | null;
+  externalPromptTrigger?: { 
+    prompt: string; 
+    timestamp: number; 
+    errorContext?: any; 
+    isAutoFix?: boolean 
+  } | null;
 }
 
 export function ChatPanel({
@@ -234,12 +310,25 @@ export function ChatPanel({
   const [buildStep, setBuildStep] = useState<'idle' | 'planning' | 'writing' | 'applying'>('idle');
   const [lastFailedPrompt, setLastFailedPrompt] = useState<string | null>(null);
 
+  // Auto-debug attempt loop state (max 3 tries per build)
+  const [autoFixAttempt, setAutoFixAttempt] = useState<number>(0);
+  const [autoFixStatusText, setAutoFixStatusText] = useState<string | null>(null);
+  const [needsUserHelp, setNeedsUserHelp] = useState<boolean>(false);
+  const [lastErrorDetails, setLastErrorDetails] = useState<{ message: string; stack?: string } | null>(null);
+  const lastAutoFixedErrorRef = useRef<string>('');
+
+  // Diff Modal state
+  const [diffModalTarget, setDiffModalTarget] = useState<{
+    fileName: string;
+    diff: FileDiffData;
+    changeType: 'created' | 'modified' | 'deleted';
+  } | null>(null);
+
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const lastHandledTriggerRef = useRef<number>(0);
 
-  // Performance-optimized scrolling:
-  // Instant scroll if streaming and near bottom; smooth scroll if not streaming
+  // Optimized scroll handler
   const handleAutoScroll = useCallback((instant = false) => {
     const el = scrollContainerRef.current;
     if (!el) return;
@@ -247,7 +336,7 @@ export function ChatPanel({
     const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
     if (isNearBottom || !instant) {
       if (instant) {
-        el.scrollTop = el.scrollHeight; // Instant scroll
+        el.scrollTop = el.scrollHeight;
       } else {
         el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
       }
@@ -264,17 +353,23 @@ export function ChatPanel({
       abortControllerRef.current = null;
       setIsGenerating(false);
       setBuildStep('idle');
+      setAutoFixAttempt(0);
+      setAutoFixStatusText(null);
       showToast('Generation stopped by user', 'info');
     }
   };
 
   const handleSendMessage = useCallback(
-    async (textOverride?: string, errorContextOverride?: any) => {
+    async (textOverride?: string, errorContextOverride?: any, isAutoFixLoop = false) => {
       const promptText = (textOverride || input).trim();
       if (!promptText || isGenerating) return;
 
       if (!textOverride) {
         setInput('');
+        // User typed a manual message: reset auto-fix loop counters
+        setAutoFixAttempt(0);
+        setAutoFixStatusText(null);
+        setNeedsUserHelp(false);
       }
 
       runStorageMigration();
@@ -299,7 +394,10 @@ export function ChatPanel({
         content: '',
         timestamp: Date.now(),
         status: 'planning',
-        tags: [geminiModel || 'gemini-2.5-flash']
+        tags: [
+          geminiModel || 'gemini-2.5-flash',
+          ...(isAutoFixLoop ? [`Auto-fix ${autoFixAttempt + 1}/3`] : [])
+        ]
       };
       addChatMessage(assistantMessage);
 
@@ -369,7 +467,7 @@ export function ChatPanel({
         let buffer = '';
         let done = false;
 
-        // 80ms throttle buffer for store updates (Item 12)
+        // 80ms throttle buffer for store updates
         let lastFlushTime = performance.now();
         let throttleTimer: NodeJS.Timeout | null = null;
 
@@ -388,7 +486,7 @@ export function ChatPanel({
                   : m
               )
             }));
-            handleAutoScroll(true); // Instant scroll during streaming
+            handleAutoScroll(true);
           } else if (!throttleTimer) {
             throttleTimer = setTimeout(() => {
               flushStoreUpdate(true);
@@ -443,22 +541,50 @@ export function ChatPanel({
           }
         }
 
-        // Final store update flush
         if (throttleTimer) clearTimeout(throttleTimer);
         flushStoreUpdate(true);
 
-        // Step 3: Applying code changes
         setBuildStep('applying');
 
+        // Multi-file parsing and changes extraction
         const parsed = parseAiResponse(accumulatedText);
 
-        if (parsed.hasFiles && parsed.files['index.html']) {
-          await onApplyFiles(parsed.files);
+        if (parsed.hasFiles) {
+          // Calculate changes breakdown: created, modified, deleted + diffs
+          const created: string[] = [];
+          const modified: string[] = [];
+          const deleted: string[] = parsed.deletedFiles || [];
+          const diffs: Record<string, FileDiffData> = {};
+
+          for (const [fileName, newContent] of Object.entries(parsed.files)) {
+            const original = projectFiles[fileName];
+            if (original === undefined) {
+              created.push(fileName);
+              diffs[fileName] = { original: '', updated: newContent };
+            } else {
+              modified.push(fileName);
+              diffs[fileName] = { original, updated: newContent };
+            }
+          }
+
+          for (const del of deleted) {
+            diffs[del] = { original: projectFiles[del] || '', updated: '' };
+          }
+
+          const changeSummary: FileChangeSummary = {
+            created,
+            modified,
+            deleted,
+            diffs
+          };
+
+          // Apply upserts and deletions
+          await onApplyFiles(parsed.files, parsed.deletedFiles);
 
           // Post-build snapshot
           createProjectVersion(
             projectId,
-            parsed.files,
+            { ...projectFiles, ...parsed.files },
             `AI: ${promptText.substring(0, 32)}${promptText.length > 32 ? '...' : ''}`,
             'ai',
             promptText
@@ -469,9 +595,10 @@ export function ChatPanel({
               m.id === assistantMsgId
                 ? {
                     ...m,
-                    content: accumulatedText,
+                    content: parsed.explanation,
                     status: 'done',
-                    appliedFiles: Object.keys(parsed.files)
+                    appliedFiles: Object.keys(parsed.files),
+                    changes: changeSummary
                   }
                 : m
             )
@@ -530,6 +657,7 @@ export function ChatPanel({
       } finally {
         setIsGenerating(false);
         setBuildStep('idle');
+        setAutoFixStatusText(null);
         abortControllerRef.current = null;
       }
     },
@@ -546,20 +674,55 @@ export function ChatPanel({
       onBuildFinished,
       onVersionCreated,
       projectId,
-      handleAutoScroll
+      handleAutoScroll,
+      autoFixAttempt
     ]
   );
 
-  // Handle external prompt trigger (e.g. from "Fix with AI")
+  // AUTO-DEBUG LOOP HANDLER (triggered by preview runtime errors)
   useEffect(() => {
     if (
       externalPromptTrigger &&
       externalPromptTrigger.timestamp > lastHandledTriggerRef.current
     ) {
       lastHandledTriggerRef.current = externalPromptTrigger.timestamp;
-      handleSendMessage(externalPromptTrigger.prompt, externalPromptTrigger.errorContext);
+
+      const isAuto = externalPromptTrigger.isAutoFix;
+      const errorMsg = externalPromptTrigger.errorContext?.message || externalPromptTrigger.prompt;
+
+      // Dedupe identical error messages
+      if (lastAutoFixedErrorRef.current === errorMsg && isAuto) {
+        return;
+      }
+
+      if (isAuto) {
+        if (autoFixAttempt >= 3) {
+          // Max attempts reached: stop and show "Needs your help" banner
+          setNeedsUserHelp(true);
+          setLastErrorDetails(externalPromptTrigger.errorContext || { message: errorMsg });
+          showToast('Auto-fix reached 3 attempts limit. Needs your help.', 'error');
+          return;
+        }
+
+        lastAutoFixedErrorRef.current = errorMsg;
+        const nextAttempt = autoFixAttempt + 1;
+        setAutoFixAttempt(nextAttempt);
+        setAutoFixStatusText(`Fixing error ${nextAttempt}/3...`);
+
+        handleSendMessage(
+          `Fix this runtime bug in the game (Auto-fix attempt ${nextAttempt}/3):\n${errorMsg}`,
+          externalPromptTrigger.errorContext,
+          true
+        );
+      } else {
+        // Manual fix triggered by user
+        setAutoFixAttempt(0);
+        setAutoFixStatusText(null);
+        setNeedsUserHelp(false);
+        handleSendMessage(externalPromptTrigger.prompt, externalPromptTrigger.errorContext, false);
+      }
     }
-  }, [externalPromptTrigger, handleSendMessage]);
+  }, [externalPromptTrigger, autoFixAttempt, handleSendMessage, showToast]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -572,8 +735,20 @@ export function ChatPanel({
     setInput(prompt);
   };
 
+  const handleOpenFileDiff = (
+    fileName: string,
+    diff: FileDiffData,
+    changeType: 'created' | 'modified' | 'deleted'
+  ) => {
+    setDiffModalTarget({
+      fileName,
+      diff,
+      changeType
+    });
+  };
+
   return (
-    <div className="flex flex-col h-full bg-slate-950 border-r border-slate-800/80 select-none overflow-hidden">
+    <div className="flex flex-col h-full bg-slate-950 border-r border-slate-800/80 select-none overflow-hidden relative">
       {/* Chat Header */}
       <div className="h-11 border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-sm px-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
@@ -598,13 +773,17 @@ export function ChatPanel({
 
       {/* Building Progress Status Banner */}
       {isGenerating && (
-        <div className="bg-indigo-950/40 border-b border-indigo-500/30 px-3 py-2 flex items-center justify-between text-xs text-indigo-300 animate-in fade-in">
+        <div className="bg-indigo-950/50 border-b border-indigo-500/30 px-3 py-2 flex items-center justify-between text-xs text-indigo-300 animate-in fade-in">
           <div className="flex items-center gap-2">
             <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
-            <span className="font-medium capitalize">
-              {buildStep === 'planning' && 'Thinking and designing game loop...'}
-              {buildStep === 'writing' && 'Streaming game code...'}
-              {buildStep === 'applying' && 'Applying changes to live sandbox...'}
+            <span className="font-medium">
+              {autoFixStatusText || (
+                <>
+                  {buildStep === 'planning' && 'Designing game logic & files...'}
+                  {buildStep === 'writing' && 'Streaming updated game code...'}
+                  {buildStep === 'applying' && 'Applying multi-file changes...'}
+                </>
+              )}
             </span>
           </div>
 
@@ -615,6 +794,41 @@ export function ChatPanel({
             <Square className="w-2.5 h-2.5 fill-current" />
             <span>Stop</span>
           </button>
+        </div>
+      )}
+
+      {/* "Needs Your Help" Banner when auto-fix reaches 3 attempts */}
+      {needsUserHelp && lastErrorDetails && (
+        <div className="bg-amber-950/80 border-b border-amber-600/50 p-3 px-4 text-xs text-amber-200 flex flex-col gap-2 z-20 animate-in slide-in-from-top-2">
+          <div className="flex items-start gap-2">
+            <HelpCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-semibold text-amber-100">Needs your help: </span>
+              <span>Auto-debug tried 3 times to fix this bug. The error persists:</span>
+              <p className="font-mono text-[11px] text-amber-300/90 mt-1 bg-slate-950/60 p-2 rounded-lg border border-amber-800/40">
+                {lastErrorDetails.message}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 mt-1">
+            <button
+              onClick={() => {
+                setNeedsUserHelp(false);
+                handleSendMessage(`Help fix this persistent game error:\n${lastErrorDetails.message}`, lastErrorDetails, false);
+              }}
+              className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Fix with AI</span>
+            </button>
+            <button
+              onClick={() => setNeedsUserHelp(false)}
+              className="px-2.5 py-1 rounded-lg border border-amber-800/80 text-amber-300 hover:text-white hover:bg-amber-900/40 text-xs"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
@@ -629,6 +843,7 @@ export function ChatPanel({
             msg={msg}
             lastFailedPrompt={lastFailedPrompt}
             onRetry={handleSendMessage}
+            onOpenFileDiff={handleOpenFileDiff}
           />
         ))}
       </div>
@@ -686,6 +901,18 @@ export function ChatPanel({
           </Link>
         </div>
       </div>
+
+      {/* Monaco Diff Modal for clicked file changes */}
+      {diffModalTarget && (
+        <FileDiffModal
+          isOpen={Boolean(diffModalTarget)}
+          onClose={() => setDiffModalTarget(null)}
+          fileName={diffModalTarget.fileName}
+          originalContent={diffModalTarget.diff.original}
+          updatedContent={diffModalTarget.diff.updated}
+          changeType={diffModalTarget.changeType}
+        />
+      )}
     </div>
   );
 }

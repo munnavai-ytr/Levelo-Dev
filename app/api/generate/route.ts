@@ -3,17 +3,30 @@ import { GoogleGenAI } from '@google/genai';
 
 export const runtime = 'nodejs';
 
-const SYSTEM_INSTRUCTION = `You are an expert game developer. Build complete, polished, playable browser games using Phaser 3 (2D) or Three.js (3D) via CDN. Return a short explanation, then the full updated files.
+const SYSTEM_INSTRUCTION = `You are an expert game developer. Build complete, polished, playable browser games using Phaser 3 (2D) or Three.js (3D) via CDN.
+Levelo projects are multi-file web applications (e.g. index.html, game.js, style.css, or subfolders like src/player.js).
 
 OUTPUT FORMAT:
-First write a brief, friendly explanation (1-3 sentences) describing what you changed or built.
-Then output the full updated files in fenced code blocks labeled with the file path, exactly like this:
+1. First, write a brief, friendly explanation (1-3 sentences) describing what you changed, added, or fixed.
+2. If any files should be deleted, write delete directives on their own lines:
+[DELETE: filename.ext]
+3. Output each created or modified file in a fenced code block with the language and exact relative filepath:
 \`\`\`html index.html
 <!DOCTYPE html>
-<html lang="en">
-...
-</html>
+<html>...</html>
 \`\`\`
+\`\`\`javascript game.js
+// JavaScript game code
+\`\`\`
+\`\`\`css style.css
+/* CSS code */
+\`\`\`
+
+CRITICAL MULTI-FILE RULES:
+- You ONLY need to output the files that were CREATED or MODIFIED. Files that are unchanged do NOT need to be outputted.
+- index.html can link local scripts with <script src="game.js"></script> and local styles with <link rel="stylesheet" href="style.css">.
+- External libraries (Phaser, Three.js) must be loaded via standard CDN <script> tags in index.html.
+- Always output the full content of any file you touch (no placeholders like "...rest of code unchanged...").
 
 CRITICAL GAME REQUIREMENTS:
 1. Complete Game Loop: Fully working game state, physics, collisions, and win/loss conditions.
@@ -21,8 +34,7 @@ CRITICAL GAME REQUIREMENTS:
 3. Scoring & State: Clear Score, High Score, Game Over screen, and instant Restart trigger (e.g. press Space or tap button to restart).
 4. Responsive Canvas: Use Phaser Scale.FIT with autoCenter: Phaser.Scale.CENTER_BOTH, or Three.js window resize handlers, so it adapts to any screen or device aspect ratio.
 5. Built-in Synthesized WebAudio SFX: Synthesize fun arcade sound effects (jump, pickup, hit, shoot, game over) using the browser WebAudio API (AudioContext) directly in code. DO NOT reference external .wav or .mp3 URLs that might fail to load.
-6. Zero External Asset Dependencies: DO NOT load external sprite images or assets from external URLs that might 404 or fail CORS. Procedurally generate all textures, player sprites, and particles using Phaser canvas graphics (e.g. this.make.graphics().generateTexture()) or Three.js geometry/materials.
-7. Complete Code: Always output the FULL, COMPLETE index.html. Never truncate with placeholders like "...rest of code unchanged...".`;
+6. Zero External Asset Dependencies: DO NOT load external sprite images or assets from external URLs that might 404 or fail CORS. Procedurally generate all textures, player sprites, and particles using Phaser canvas graphics (e.g. this.make.graphics().generateTexture()) or Three.js geometry/materials.`;
 
 export async function POST(req: NextRequest) {
   try {
@@ -54,7 +66,17 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    const currentHtml = files?.['index.html'] || '';
+    // Format all project files into multi-file prompt context
+    let filesContext = '';
+    if (files && typeof files === 'object') {
+      for (const [filePath, content] of Object.entries(files)) {
+        const ext = filePath.split('.').pop() || 'txt';
+        filesContext += `\nFile: ${filePath}\n\`\`\`${ext}\n${content}\n\`\`\`\n`;
+      }
+    }
+    if (!filesContext.trim()) {
+      filesContext = '\n(Project is currently empty. Provide index.html and any companion scripts/styles.)\n';
+    }
 
     // Keep last 6 messages to reduce prompt latency while retaining context
     const recentMessages = messages.slice(-6);
@@ -85,11 +107,11 @@ export async function POST(req: NextRequest) {
 
     // If an error is being fixed with AI, include the runtime error details
     if (errorContext) {
-      userPrompt = `[RUNTIME ERROR IN PREVIEW]\nError: ${errorContext.message || errorContext}\n${errorContext.stack ? 'Stack: ' + errorContext.stack : ''}\n\nPlease inspect the code, diagnose the bug, and provide the complete fixed index.html.\n\nUser instructions: ${userPrompt}`;
+      userPrompt = `[RUNTIME ERROR IN PREVIEW]\nError: ${errorContext.message || errorContext}\n${errorContext.stack ? 'Stack: ' + errorContext.stack : ''}\n\nPlease inspect the code, diagnose the bug, and provide the fixed code for the affected file(s).\n\nUser instructions: ${userPrompt}`;
     }
 
     // Embed current code into user turn so model can mutate existing code
-    const fullLatestUserText = `[CURRENT PROJECT FILES]\nFile: index.html\n\`\`\`html\n${currentHtml}\n\`\`\`\n\n[USER REQUEST]\n${userPrompt}`;
+    const fullLatestUserText = `[CURRENT PROJECT FILES]${filesContext}\n\n[USER REQUEST]\n${userPrompt}`;
 
     contents.push({
       role: 'user',
@@ -139,7 +161,7 @@ export async function POST(req: NextRequest) {
       async start(controller) {
         const encoder = new TextEncoder();
 
-        // (a) Send immediate status event
+        // Send immediate status event
         controller.enqueue(
           encoder.encode(`data: ${JSON.stringify({ type: 'status', status: 'connected' })}\n\n`)
         );
@@ -153,7 +175,7 @@ export async function POST(req: NextRequest) {
           }
         }, 15000);
 
-        // (e) Abort upstream generation when client disconnects
+        // Abort upstream generation when client disconnects
         let isAborted = false;
         const abortHandler = () => {
           isAborted = true;

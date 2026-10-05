@@ -26,6 +26,25 @@ export interface GameProject {
 
 export type DeviceMode = 'mobile' | 'tablet' | 'desktop';
 
+export interface FileDiffData {
+  original: string;
+  updated: string;
+}
+
+export interface FileChangeSummary {
+  created: string[];
+  modified: string[];
+  deleted: string[];
+  diffs?: Record<string, FileDiffData>;
+}
+
+export interface PlaytestResult {
+  status: 'checking' | 'passed' | 'failed';
+  reason?: string;
+  fps?: number;
+  timestamp?: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -35,6 +54,8 @@ export interface ChatMessage {
   status?: 'planning' | 'writing' | 'applying' | 'done' | 'error';
   errorType?: 'missing_key' | 'invalid_key' | 'rate_limit' | 'generic';
   appliedFiles?: string[];
+  changes?: FileChangeSummary;
+  playtest?: PlaytestResult;
 }
 
 export interface GeminiModelInfo {
