@@ -1,0 +1,6 @@
+{
+  "name": "GameForge AI",
+  "description": "AI-powered web game builder with live sandboxed preview, Monaco code editor, and Firebase project management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
