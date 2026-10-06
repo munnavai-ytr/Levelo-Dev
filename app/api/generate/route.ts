@@ -33,8 +33,8 @@ CRITICAL GAME REQUIREMENTS:
 2. Dual Controls: Support BOTH keyboard (Arrow keys, WASD, Space) AND responsive on-screen touch controls (D-pad, jump/action buttons) so it is 100% playable on phones and tablets.
 3. Scoring & State: Clear Score, High Score, Game Over screen, and instant Restart trigger (e.g. press Space or tap button to restart).
 4. Responsive Canvas: Use Phaser Scale.FIT with autoCenter: Phaser.Scale.CENTER_BOTH, or Three.js window resize handlers, so it adapts to any screen or device aspect ratio.
-5. Built-in Synthesized WebAudio SFX: Synthesize fun arcade sound effects (jump, pickup, hit, shoot, game over) using the browser WebAudio API (AudioContext) directly in code. DO NOT reference external .wav or .mp3 URLs that might fail to load.
-6. Zero External Asset Dependencies: DO NOT load external sprite images or assets from external URLs that might 404 or fail CORS. Procedurally generate all textures, player sprites, and particles using Phaser canvas graphics (e.g. this.make.graphics().generateTexture()) or Three.js geometry/materials.`;
+5. Built-in Synthesized WebAudio SFX: Synthesize fun arcade sound effects (jump, pickup, hit, shoot, game over) using the browser WebAudio API (AudioContext) directly in code or use available project audio assets (e.g. this.load.audio('sfx', 'assets/sfx.wav')).
+6. Using Project Assets: When project assets are listed in [AVAILABLE PROJECT ASSETS], load and use them directly in the game (e.g., this.load.image('hero', 'assets/hero.webp'), this.load.audio('jump', 'assets/jump.wav')). When no matching asset exists, fall back to procedural graphics using Phaser canvas graphics (e.g. this.make.graphics().generateTexture()) or Three.js geometry/materials. DO NOT load untrusted external third-party image URLs.`;
 
 export async function POST(req: NextRequest) {
   try {
@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { messages = [], files = {}, model = 'gemini-2.5-flash', errorContext } = body;
+    const { messages = [], files = {}, assets = [], model = 'gemini-2.5-flash', errorContext } = body;
 
     // Initialize Google GenAI client
     const ai = new GoogleGenAI({
@@ -76,6 +76,16 @@ export async function POST(req: NextRequest) {
     }
     if (!filesContext.trim()) {
       filesContext = '\n(Project is currently empty. Provide index.html and any companion scripts/styles.)\n';
+    }
+
+    // Format project assets manifest
+    let assetsContext = '';
+    if (assets && Array.isArray(assets) && assets.length > 0) {
+      assetsContext = '\n\n[AVAILABLE PROJECT ASSETS]\nThe following assets are stored in the project and can be loaded directly via their path:\n';
+      for (const a of assets) {
+        assetsContext += `- Path: "${a.path || 'assets/' + a.name}" | Type: ${a.type} | MIME: ${a.mimeType}${a.width ? ` | Dimensions: ${a.width}x${a.height}` : ''}\n`;
+      }
+      assetsContext += 'To use these in Phaser: this.load.image("assetKey", "assets/filename.webp") or this.load.audio("sfxKey", "assets/filename.wav") in preload(), then display or play them.\n';
     }
 
     // Keep last 6 messages to reduce prompt latency while retaining context
@@ -110,8 +120,8 @@ export async function POST(req: NextRequest) {
       userPrompt = `[RUNTIME ERROR IN PREVIEW]\nError: ${errorContext.message || errorContext}\n${errorContext.stack ? 'Stack: ' + errorContext.stack : ''}\n\nPlease inspect the code, diagnose the bug, and provide the fixed code for the affected file(s).\n\nUser instructions: ${userPrompt}`;
     }
 
-    // Embed current code into user turn so model can mutate existing code
-    const fullLatestUserText = `[CURRENT PROJECT FILES]${filesContext}\n\n[USER REQUEST]\n${userPrompt}`;
+    // Embed current code and asset manifest into user turn so model can mutate existing code
+    const fullLatestUserText = `[CURRENT PROJECT FILES]${filesContext}${assetsContext}\n\n[USER REQUEST]\n${userPrompt}`;
 
     contents.push({
       role: 'user',

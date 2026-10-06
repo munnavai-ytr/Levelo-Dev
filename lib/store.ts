@@ -23,10 +23,10 @@ interface AppStore {
   setIsAuthLoading: (loading: boolean) => void;
 
   // Workspace Tabs & Layout
-  activeTab: 'preview' | 'code' | 'files';
-  setActiveTab: (tab: 'preview' | 'code' | 'files') => void;
-  mobileTab: 'chat' | 'preview' | 'code';
-  setMobileTab: (tab: 'chat' | 'preview' | 'code') => void;
+  activeTab: 'preview' | 'code' | 'files' | 'assets';
+  setActiveTab: (tab: 'preview' | 'code' | 'files' | 'assets') => void;
+  mobileTab: 'chat' | 'preview' | 'code' | 'assets';
+  setMobileTab: (tab: 'chat' | 'preview' | 'code' | 'assets') => void;
   
   // Preview Controls
   deviceMode: DeviceMode;

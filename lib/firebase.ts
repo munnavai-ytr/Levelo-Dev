@@ -28,7 +28,8 @@ import {
   deleteField,
   Timestamp 
 } from 'firebase/firestore';
-import type { GameProject, ProjectVersion, ProjectFiles } from './types';
+import type { GameProject, ProjectVersion, ProjectFiles, ProjectAsset } from './types';
+import { cacheAsset, cacheAssets, getCachedAssetsForProject, removeCachedAsset } from './asset-cache';
 import { DEFAULT_PHASER_STARTER } from './starter-game';
 import { STORAGE_KEYS, runStorageMigration } from './storage-migration';
 
@@ -568,3 +569,199 @@ export async function bulkDeleteProjects(projectIds: string[]): Promise<void> {
     await deleteProject(id);
   }
 }
+
+// ==========================================
+// ASSET MANAGEMENT (PROJECTS/{ID}/ASSETS)
+// ==========================================
+const LOCAL_ASSETS_PREFIX = 'levelo_assets_';
+
+export async function fetchProjectAssets(projectId: string): Promise<ProjectAsset[]> {
+  // Try IndexedDB cache first for instant load
+  const cached = await getCachedAssetsForProject(projectId);
+
+  if (isFirebaseConfigured && db) {
+    try {
+      const assetsCol = collection(db, 'projects', projectId, 'assets');
+      const q = query(assetsCol, orderBy('createdAt', 'desc'));
+      const snap = await getDocs(q);
+      const results: ProjectAsset[] = [];
+      snap.forEach((d) => {
+        const data = d.data();
+        results.push({
+          id: d.id,
+          projectId,
+          name: data.name || 'unnamed_asset',
+          path: data.path || `assets/${data.name || 'unnamed_asset'}`,
+          type: data.type || 'image',
+          mimeType: data.mimeType || 'image/webp',
+          size: data.size || 0,
+          data: data.data || '',
+          thumbnail: data.thumbnail || data.data || '',
+          width: data.width,
+          height: data.height,
+          duration: data.duration,
+          createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt || new Date().toISOString(),
+          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt || new Date().toISOString()
+        });
+      });
+
+      // Update cache in background
+      cacheAssets(results).catch(() => {});
+      return results;
+    } catch (err) {
+      console.warn('Firestore fetchProjectAssets failed, using cached/local:', err);
+    }
+  }
+
+  if (cached && cached.length > 0) {
+    return cached;
+  }
+
+  if (typeof window !== 'undefined') {
+    const raw = localStorage.getItem(LOCAL_ASSETS_PREFIX + projectId);
+    if (raw) {
+      try {
+        return JSON.parse(raw);
+      } catch {}
+    }
+  }
+
+  return [];
+}
+
+export async function saveProjectAsset(
+  projectId: string,
+  assetData: Omit<ProjectAsset, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+): Promise<ProjectAsset> {
+  const assetId = assetData.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'asset_' + Date.now());
+  const now = new Date().toISOString();
+
+  const asset: ProjectAsset = {
+    id: assetId,
+    projectId,
+    name: assetData.name,
+    path: assetData.path.startsWith('assets/') ? assetData.path : `assets/${assetData.name}`,
+    type: assetData.type,
+    mimeType: assetData.mimeType,
+    size: assetData.size,
+    data: assetData.data,
+    thumbnail: assetData.thumbnail || assetData.data,
+    width: assetData.width,
+    height: assetData.height,
+    duration: assetData.duration,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  if (isFirebaseConfigured && db) {
+    try {
+      const assetDocRef = doc(db, 'projects', projectId, 'assets', asset.id);
+      await setDoc(assetDocRef, {
+        name: asset.name,
+        path: asset.path,
+        type: asset.type,
+        mimeType: asset.mimeType,
+        size: asset.size,
+        data: asset.data,
+        thumbnail: asset.thumbnail || null,
+        width: asset.width || null,
+        height: asset.height || null,
+        duration: asset.duration || null,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    } catch (err) {
+      console.warn('Firestore saveProjectAsset failed, saving to local store:', err);
+    }
+  }
+
+  // Update IndexedDB cache
+  cacheAsset(asset).catch(() => {});
+
+  // Local storage fallback
+  if (typeof window !== 'undefined') {
+    const key = LOCAL_ASSETS_PREFIX + projectId;
+    const raw = localStorage.getItem(key);
+    let list: ProjectAsset[] = raw ? JSON.parse(raw) : [];
+    const idx = list.findIndex(a => a.id === asset.id);
+    if (idx >= 0) {
+      list[idx] = asset;
+    } else {
+      list.unshift(asset);
+    }
+    try {
+      localStorage.setItem(key, JSON.stringify(list));
+    } catch (storageErr) {
+      console.warn('LocalStorage full, rely on IndexedDB:', storageErr);
+    }
+  }
+
+  return asset;
+}
+
+export async function renameProjectAsset(
+  projectId: string,
+  assetId: string,
+  newName: string,
+  newPath: string
+): Promise<void> {
+  const now = new Date().toISOString();
+
+  if (isFirebaseConfigured && db) {
+    try {
+      const assetDocRef = doc(db, 'projects', projectId, 'assets', assetId);
+      await updateDoc(assetDocRef, {
+        name: newName,
+        path: newPath,
+        updatedAt: serverTimestamp()
+      });
+    } catch (err) {
+      console.warn('Firestore renameProjectAsset failed:', err);
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    const key = LOCAL_ASSETS_PREFIX + projectId;
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      try {
+        const list: ProjectAsset[] = JSON.parse(raw);
+        const item = list.find(a => a.id === assetId);
+        if (item) {
+          item.name = newName;
+          item.path = newPath;
+          item.updatedAt = now;
+          localStorage.setItem(key, JSON.stringify(list));
+          cacheAsset(item).catch(() => {});
+        }
+      } catch {}
+    }
+  }
+}
+
+export async function deleteProjectAsset(projectId: string, assetId: string): Promise<void> {
+  if (isFirebaseConfigured && db) {
+    try {
+      const assetDocRef = doc(db, 'projects', projectId, 'assets', assetId);
+      await deleteDoc(assetDocRef);
+    } catch (err) {
+      console.warn('Firestore deleteProjectAsset failed:', err);
+    }
+  }
+
+  // Remove from IndexedDB
+  removeCachedAsset(projectId, assetId).catch(() => {});
+
+  if (typeof window !== 'undefined') {
+    const key = LOCAL_ASSETS_PREFIX + projectId;
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      try {
+        const list: ProjectAsset[] = JSON.parse(raw);
+        const filtered = list.filter(a => a.id !== assetId);
+        localStorage.setItem(key, JSON.stringify(filtered));
+      } catch {}
+    }
+  }
+}
+

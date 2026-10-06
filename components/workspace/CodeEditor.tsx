@@ -99,12 +99,13 @@ export function CodeEditor({
     // Ensure activeFile exists
     if (files[activeFile] === undefined && allFileKeys.length > 0) {
       const fallback = allFileKeys.includes('index.html') ? 'index.html' : allFileKeys[0];
-      setActiveFile(fallback);
-      if (!openTabs.includes(fallback)) {
-        setOpenTabs((prev) => [...prev, fallback]);
-      }
+      const timer = setTimeout(() => {
+        setActiveFile(fallback);
+        setOpenTabs((prev) => (prev.includes(fallback) ? prev : [...prev, fallback]));
+      }, 0);
+      return () => clearTimeout(timer);
     }
-  }, [files, dirtyFiles, activeFile, allFileKeys, openTabs]);
+  }, [files, dirtyFiles, activeFile, allFileKeys]);
 
   // Update editor value when activeFile changes
   useEffect(() => {
@@ -268,7 +269,7 @@ export function CodeEditor({
     }
   };
 
-  const currentContent = workingFilesRef.current[activeFile] || '';
+  const currentContent = files[activeFile] || '';
   const currentLines = currentContent.split('\n').length;
 
   return (

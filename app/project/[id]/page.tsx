@@ -9,7 +9,8 @@ import {
   fetchProjectById, 
   updateProjectFiles, 
   renameProject, 
-  updateProjectThumbnail 
+  updateProjectThumbnail,
+  fetchProjectAssets 
 } from '@/lib/firebase';
 import { useAppStore } from '@/lib/store';
 import { useToast } from '@/components/Toast';
@@ -17,7 +18,10 @@ import { useIsMobile } from '@/hooks/use-is-mobile';
 import { PreviewPanel } from '@/components/workspace/PreviewPanel';
 import { ChatPanel } from '@/components/workspace/ChatPanel';
 import { Logo } from '@/components/Logo';
-import type { PlaytestResult } from '@/lib/types';
+import { PublishModal } from '@/components/publish/PublishModal';
+import { ShareModal } from '@/components/publish/ShareModal';
+import { ExportModal } from '@/components/publish/ExportModal';
+import type { PlaytestResult, ProjectAsset, PublishedGame } from '@/lib/types';
 import { 
   Gamepad2, 
   ChevronRight, 
@@ -31,7 +35,12 @@ import {
   PanelLeftClose, 
   PanelLeftOpen, 
   Loader2, 
-  Edit2
+  Edit2,
+  Package,
+  HardDrive,
+  Globe2,
+  Download,
+  Share2
 } from 'lucide-react';
 
 // Dynamic import heavy components for fast initial load
@@ -56,6 +65,19 @@ const FilesPanel = dynamic(
       <div className="p-4 text-xs text-slate-400 font-mono">
         <Loader2 className="w-4 h-4 animate-spin text-indigo-500 inline mr-2" />
         Loading project files...
+      </div>
+    )
+  }
+);
+
+const AssetsPanel = dynamic(
+  () => import('@/components/assets/AssetsPanel').then((m) => m.AssetsPanel),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="p-4 text-xs text-slate-400 font-mono">
+        <Loader2 className="w-4 h-4 animate-spin text-indigo-500 inline mr-2" />
+        Loading project assets...
       </div>
     )
   }
@@ -92,6 +114,13 @@ export default function WorkspacePage() {
   // Active open file for editor
   const [activeEditorFile, setActiveEditorFile] = useState<string>('index.html');
   const [hasOpenedCode, setHasOpenedCode] = useState(false);
+  const [projectAssets, setProjectAssets] = useState<ProjectAsset[]>([]);
+
+  // Modals state
+  const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [activeShareGame, setActiveShareGame] = useState<PublishedGame | null>(null);
 
   // Trigger from error banner ("Fix with AI") or auto-debug loop
   const [externalPromptTrigger, setExternalPromptTrigger] = useState<{
@@ -132,13 +161,16 @@ export default function WorkspacePage() {
     }
   }, [user, isAuthLoading, router]);
 
-  // Load project by ID
+  // Load project by ID and project assets
   useEffect(() => {
     let active = true;
     async function load() {
       if (!projectId) return;
       try {
-        const proj = await fetchProjectById(projectId);
+        const [proj, assetsList] = await Promise.all([
+          fetchProjectById(projectId),
+          fetchProjectAssets(projectId).catch(() => [])
+        ]);
         if (active) {
           if (proj) {
             setCurrentProject(proj);
@@ -149,6 +181,9 @@ export default function WorkspacePage() {
           } else {
             showToast('Project not found', 'error');
             router.push('/dashboard');
+          }
+          if (assetsList) {
+            setProjectAssets(assetsList);
           }
           setLoading(false);
         }
@@ -267,13 +302,16 @@ export default function WorkspacePage() {
     }
   };
 
+  const projectIdRef = useRef<string | undefined>(currentProject?.id);
+  projectIdRef.current = currentProject?.id;
+
   const handleCaptureThumbnail = useCallback(
     (thumbnail: string) => {
-      if (currentProject?.id) {
-        updateProjectThumbnail(currentProject.id, thumbnail).catch(console.warn);
+      if (projectIdRef.current) {
+        updateProjectThumbnail(projectIdRef.current, thumbnail).catch(console.warn);
       }
     },
-    [currentProject?.id]
+    []
   );
 
   // Resizable split view handlers for Desktop
@@ -372,7 +410,7 @@ export default function WorkspacePage() {
           </div>
         </div>
 
-        {/* Center / Right: Desktop Tabs (Preview | Code | Files) */}
+        {/* Center / Right: Desktop Tabs (Preview | Code | Files | Assets) */}
         {!isMobile && (
           <div className="flex items-center gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
             <button
@@ -410,11 +448,48 @@ export default function WorkspacePage() {
               <FolderTree className="w-3.5 h-3.5" />
               <span>Files</span>
             </button>
+
+            <button
+              onClick={() => setActiveTab('assets')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all ${
+                activeTab === 'assets'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Package className="w-3.5 h-3.5" />
+              <span>Assets</span>
+              {projectAssets.length > 0 && (
+                <span className="ml-1 text-[10px] px-1.5 py-0.2 rounded-full bg-indigo-500/30 text-indigo-300 font-mono">
+                  {projectAssets.length}
+                </span>
+              )}
+            </button>
           </div>
         )}
 
         {/* Right Tools */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          {/* Export Button */}
+          <button
+            onClick={() => setIsExportModalOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white text-xs font-medium transition-colors cursor-pointer"
+            title="Export Game (ZIP, HTML, Mobile App)"
+          >
+            <Download className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="hidden sm:inline">Export</span>
+          </button>
+
+          {/* Publish Button */}
+          <button
+            onClick={() => setIsPublishModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-all shadow-sm shadow-indigo-600/20 active:scale-95 cursor-pointer"
+            title="Publish Game to Web"
+          >
+            <Globe2 className="w-3.5 h-3.5" />
+            <span>Publish</span>
+          </button>
+
           {!isMobile && (
             <button
               onClick={() => setChatCollapsed(!chatCollapsed)}
@@ -453,6 +528,7 @@ export default function WorkspacePage() {
                 <ChatPanel
                   projectId={currentProject.id}
                   projectFiles={currentProject.files}
+                  projectAssets={projectAssets}
                   onApplyFiles={handleApplyAiFiles}
                   externalPromptTrigger={externalPromptTrigger}
                 />
@@ -470,11 +546,12 @@ export default function WorkspacePage() {
               />
             )}
 
-            {/* Right: Active Tab View (Preview | Code | Files) */}
+            {/* Right: Active Tab View (Preview | Code | Files | Assets) */}
             <div className="flex-1 h-full overflow-hidden bg-slate-950">
               {activeTab === 'preview' && (
                 <PreviewPanel 
                   files={currentProject.files}
+                  assets={projectAssets}
                   onFixWithAi={handleFixWithAi}
                   onCaptureThumbnail={handleCaptureThumbnail}
                 />
@@ -501,6 +578,12 @@ export default function WorkspacePage() {
                   onDeleteFile={handleDeleteFile}
                 />
               )}
+              {activeTab === 'assets' && (
+                <AssetsPanel
+                  projectId={currentProject.id}
+                  onUseInGame={(prompt) => handleFixWithAi({ message: prompt }, false)}
+                />
+              )}
             </div>
           </div>
         ) : (
@@ -513,6 +596,7 @@ export default function WorkspacePage() {
                 <ChatPanel
                   projectId={currentProject.id}
                   projectFiles={currentProject.files}
+                  projectAssets={projectAssets}
                   onApplyFiles={handleApplyAiFiles}
                   onBuildFinished={() => setMobileTab('preview')}
                   externalPromptTrigger={externalPromptTrigger}
@@ -521,6 +605,7 @@ export default function WorkspacePage() {
               {mobileTab === 'preview' && (
                 <PreviewPanel 
                   files={currentProject.files}
+                  assets={projectAssets}
                   onFixWithAi={handleFixWithAi}
                   onCaptureThumbnail={handleCaptureThumbnail}
                 />
@@ -532,6 +617,12 @@ export default function WorkspacePage() {
                   initialActiveFile={activeEditorFile}
                   onFilesChange={handleEditorFilesChange}
                   onActiveFileChange={setActiveEditorFile}
+                />
+              )}
+              {mobileTab === 'assets' && (
+                <AssetsPanel
+                  projectId={currentProject.id}
+                  onUseInGame={(prompt) => handleFixWithAi({ message: prompt }, false)}
                 />
               )}
             </div>
@@ -567,10 +658,57 @@ export default function WorkspacePage() {
                 <Code2 className="w-4 h-4" />
                 <span className="text-[10px] mt-1">Code</span>
               </button>
+
+              <button
+                onClick={() => setMobileTab('assets')}
+                className={`flex-1 flex flex-col items-center justify-center h-full min-h-[44px] transition-colors ${
+                  mobileTab === 'assets' ? 'text-indigo-400 font-semibold' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Package className="w-4 h-4" />
+                <span className="text-[10px] mt-1">Assets</span>
+              </button>
             </div>
           </div>
         )}
       </div>
+
+      {/* Publish Modal */}
+      {currentProject && (
+        <PublishModal
+          isOpen={isPublishModalOpen}
+          onClose={() => setIsPublishModalOpen(false)}
+          project={currentProject}
+          assets={projectAssets}
+          authorName={user?.displayName || user?.email?.split('@')[0] || 'Game Creator'}
+          onOpenShare={(published) => {
+            setActiveShareGame(published);
+            setIsShareOpen(true);
+          }}
+        />
+      )}
+
+      {/* Share Modal */}
+      {activeShareGame && (
+        <ShareModal
+          isOpen={isShareOpen}
+          onClose={() => {
+            setIsShareOpen(false);
+            setActiveShareGame(null);
+          }}
+          publishedGame={activeShareGame}
+        />
+      )}
+
+      {/* Export Modal */}
+      {currentProject && (
+        <ExportModal
+          isOpen={isExportModalOpen}
+          onClose={() => setIsExportModalOpen(false)}
+          project={currentProject}
+          assets={projectAssets}
+        />
+      )}
     </div>
   );
 }

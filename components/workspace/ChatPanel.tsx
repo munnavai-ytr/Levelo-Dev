@@ -8,7 +8,7 @@ import { parseAiResponse } from '@/lib/parse-ai-response';
 import { updateProjectChat, createProjectVersion } from '@/lib/firebase';
 import { STORAGE_KEYS, runStorageMigration } from '@/lib/storage-migration';
 import { FileDiffModal } from '@/components/workspace/FileDiffModal';
-import type { ChatMessage, FileChangeSummary, FileDiffData } from '@/lib/types';
+import type { ChatMessage, FileChangeSummary, FileDiffData, ProjectAsset } from '@/lib/types';
 import { 
   Send, 
   Sparkles, 
@@ -283,6 +283,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
 interface ChatPanelProps {
   projectId: string;
   projectFiles: Record<string, string>;
+  projectAssets?: ProjectAsset[];
   onApplyFiles: (newFiles: Record<string, string>, deletedFiles?: string[]) => Promise<void>;
   onBuildFinished?: () => void;
   onVersionCreated?: () => void;
@@ -297,6 +298,7 @@ interface ChatPanelProps {
 export function ChatPanel({
   projectId,
   projectFiles,
+  projectAssets = [],
   onApplyFiles,
   onBuildFinished,
   onVersionCreated,
@@ -423,6 +425,15 @@ export function ChatPanel({
           body: JSON.stringify({
             messages: conversationHistory,
             files: projectFiles,
+            assets: projectAssets.map((a) => ({
+              name: a.name,
+              path: a.path,
+              type: a.type,
+              mimeType: a.mimeType,
+              size: a.size,
+              width: a.width,
+              height: a.height
+            })),
             model: geminiModel || 'gemini-2.5-flash',
             errorContext: errorContextOverride || undefined
           }),
@@ -695,32 +706,36 @@ export function ChatPanel({
         return;
       }
 
-      if (isAuto) {
-        if (autoFixAttempt >= 3) {
-          // Max attempts reached: stop and show "Needs your help" banner
-          setNeedsUserHelp(true);
-          setLastErrorDetails(externalPromptTrigger.errorContext || { message: errorMsg });
-          showToast('Auto-fix reached 3 attempts limit. Needs your help.', 'error');
-          return;
+      const timer = setTimeout(() => {
+        if (isAuto) {
+          if (autoFixAttempt >= 3) {
+            // Max attempts reached: stop and show "Needs your help" banner
+            setNeedsUserHelp(true);
+            setLastErrorDetails(externalPromptTrigger.errorContext || { message: errorMsg });
+            showToast('Auto-fix reached 3 attempts limit. Needs your help.', 'error');
+            return;
+          }
+
+          lastAutoFixedErrorRef.current = errorMsg;
+          const nextAttempt = autoFixAttempt + 1;
+          setAutoFixAttempt(nextAttempt);
+          setAutoFixStatusText(`Fixing error ${nextAttempt}/3...`);
+
+          handleSendMessage(
+            `Fix this runtime bug in the game (Auto-fix attempt ${nextAttempt}/3):\n${errorMsg}`,
+            externalPromptTrigger.errorContext,
+            true
+          );
+        } else {
+          // Manual fix triggered by user
+          setAutoFixAttempt(0);
+          setAutoFixStatusText(null);
+          setNeedsUserHelp(false);
+          handleSendMessage(externalPromptTrigger.prompt, externalPromptTrigger.errorContext, false);
         }
+      }, 0);
 
-        lastAutoFixedErrorRef.current = errorMsg;
-        const nextAttempt = autoFixAttempt + 1;
-        setAutoFixAttempt(nextAttempt);
-        setAutoFixStatusText(`Fixing error ${nextAttempt}/3...`);
-
-        handleSendMessage(
-          `Fix this runtime bug in the game (Auto-fix attempt ${nextAttempt}/3):\n${errorMsg}`,
-          externalPromptTrigger.errorContext,
-          true
-        );
-      } else {
-        // Manual fix triggered by user
-        setAutoFixAttempt(0);
-        setAutoFixStatusText(null);
-        setNeedsUserHelp(false);
-        handleSendMessage(externalPromptTrigger.prompt, externalPromptTrigger.errorContext, false);
-      }
+      return () => clearTimeout(timer);
     }
   }, [externalPromptTrigger, autoFixAttempt, handleSendMessage, showToast]);
 

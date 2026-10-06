@@ -1,6 +1,33 @@
-export interface ProjectFiles {
-  'index.html': string;
-  [key: string]: string;
+export type ProjectFiles = Record<string, string>;
+
+export type AssetType = 'sprite' | 'background' | 'tileset' | 'ui_icon' | 'audio' | 'image';
+export type AssetStyle = 'pixel_art' | 'cartoon' | 'flat_vector' | 'realistic';
+
+export interface ProjectAsset {
+  id: string;
+  projectId: string;
+  name: string; // e.g., "hero.webp", "jump.wav"
+  path: string; // e.g., "assets/hero.webp"
+  type: AssetType;
+  mimeType: string;
+  size: number; // in bytes
+  data: string; // base64 or data URL
+  thumbnail?: string; // lightweight thumbnail data URL
+  width?: number;
+  height?: number;
+  duration?: number; // audio duration in seconds
+  createdAt: any;
+  updatedAt: any;
+}
+
+export interface AssetManifestItem {
+  name: string;
+  path: string;
+  type: AssetType;
+  mimeType: string;
+  size: number;
+  width?: number;
+  height?: number;
 }
 
 export interface ProjectVersion {

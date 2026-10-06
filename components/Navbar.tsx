@@ -37,6 +37,7 @@ export function Navbar() {
 
   const navLinks = [
     { label: 'Dashboard', href: '/dashboard' },
+    { label: 'Explore', href: '/explore' },
     { label: 'Settings', href: '/settings' },
   ];
 

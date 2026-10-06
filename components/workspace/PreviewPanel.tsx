@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useAppStore } from '@/lib/store';
 import { bundleProjectHtml } from '@/lib/bundler';
-import type { DeviceMode, PlaytestResult } from '@/lib/types';
+import type { DeviceMode, PlaytestResult, ProjectAsset } from '@/lib/types';
 import { 
   RotateCw, 
   Smartphone, 
@@ -27,6 +27,7 @@ import {
 
 interface PreviewPanelProps {
   files?: Record<string, string>;
+  assets?: ProjectAsset[];
   htmlCode?: string; // backwards compatibility
   onFixWithAi?: (errorInfo: { message: string; stack?: string }, isAutoFix?: boolean) => void;
   onCaptureThumbnail?: (thumbnail: string) => void;
@@ -35,6 +36,7 @@ interface PreviewPanelProps {
 
 export function PreviewPanel({
   files,
+  assets = [],
   htmlCode,
   onFixWithAi,
   onCaptureThumbnail,
@@ -87,18 +89,21 @@ export function PreviewPanel({
     return () => observer.disconnect();
   }, []);
 
-  // Multi-file bundling: bundles index.html with inlined local styles and scripts
+  // Multi-file bundling: bundles index.html with inlined local styles and scripts + assets
   const bundledRawHtml = useMemo(() => {
     if (files && Object.keys(files).length > 0) {
-      return bundleProjectHtml(files);
+      return bundleProjectHtml(files, assets);
     }
     return htmlCode || '';
-  }, [files, htmlCode]);
+  }, [files, assets, htmlCode]);
 
   // Reset playtest status whenever code changes or preview reloads
   useEffect(() => {
-    setPlaytestResult({ status: 'checking' });
-    setActiveError(null);
+    const timer = setTimeout(() => {
+      setPlaytestResult({ status: 'checking' });
+      setActiveError(null);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [bundledRawHtml, reloadKey]);
 
   // Listen to message events from iframe console, errors, playtest, and thumbnail

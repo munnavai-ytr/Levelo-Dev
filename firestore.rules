@@ -14,6 +14,32 @@ service cloud.firestore {
         allow read, write: if request.auth != null && 
           get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
       }
+
+      // Assets subcollection (owner only)
+      match /assets/{assetId} {
+        allow read, write: if request.auth != null && 
+          get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
+      }
+    }
+
+    // Published games collection (Publicly readable, owner managed, visitor play increment)
+    match /published/{slug} {
+      allow read: if true;
+      allow create: if request.auth != null && request.resource.data.ownerId == request.auth.uid;
+      allow update: if (request.auth != null && resource.data.ownerId == request.auth.uid) || 
+                       (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['plays']));
+      allow delete: if request.auth != null && resource.data.ownerId == request.auth.uid;
+    }
+
+    // Reports collection (Publicly writable, read protected)
+    match /reports/{reportId} {
+      allow create: if request.resource.data.slug is string && request.resource.data.reason is string;
+      allow read, update, delete: if false;
+    }
+
+    // Publish rate limits tracker (Per user)
+    match /publish_ratelimits/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
   }
 }
