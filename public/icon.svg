@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="levelo-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818cf8" />
+      <stop offset="100%" stop-color="#4f46e5" />
+    </linearGradient>
+    <linearGradient id="bar-grad" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="1" />
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect width="32" height="32" rx="8" fill="url(#levelo-grad)" />
+  <!-- Upward-stacked level bars (ascending steps: level 1, 2, 3) -->
+  <rect x="6" y="19" width="5.5" height="7" rx="2" fill="url(#bar-grad)" opacity="0.75" />
+  <rect x="13.25" y="13" width="5.5" height="13" rx="2" fill="url(#bar-grad)" opacity="0.9" />
+  <rect x="20.5" y="7" width="5.5" height="19" rx="2" fill="url(#bar-grad)" />
+  <!-- Apex level indicator dot -->
+  <circle cx="23.25" cy="4" r="1.5" fill="#fcd34d" />
+</svg>

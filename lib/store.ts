@@ -1,7 +1,13 @@
 import { create } from 'zustand';
 import type { GameProject, DeviceMode, ChatMessage } from './types';
 import type { LocalUser } from './firebase';
-import { STORAGE_KEYS, runStorageMigration } from './storage-migration';
+import type { AIProviderId } from './providers/types';
+import { 
+  STORAGE_KEYS, 
+  getProviderKeyStorageName, 
+  getProviderModelStorageName, 
+  runStorageMigration 
+} from './storage-migration';
 
 interface AuthUserState {
   uid: string;
@@ -51,7 +57,17 @@ interface AppStore {
   addChatMessage: (msg: ChatMessage) => void;
   clearChat: () => void;
 
-  // Gemini Settings
+  // Multi-Provider AI Settings
+  activeProvider: AIProviderId;
+  setActiveProvider: (provider: AIProviderId) => void;
+  providerKeys: Record<AIProviderId, string>;
+  setProviderKey: (provider: AIProviderId, key: string) => void;
+  providerModels: Record<AIProviderId, string>;
+  setProviderModel: (provider: AIProviderId, model: string) => void;
+  customBaseUrl: string;
+  setCustomBaseUrl: (url: string) => void;
+
+  // Backward-compatible Gemini getters/setters
   geminiApiKey: string;
   geminiModel: string;
   setGeminiApiKey: (key: string) => void;
@@ -69,6 +85,54 @@ const getCachedUser = (): AuthUserState | null => {
 };
 
 const initialCachedUser = typeof window !== 'undefined' ? getCachedUser() : null;
+
+// Initial state helpers from localStorage
+const getInitialProvider = (): AIProviderId => {
+  if (typeof window === 'undefined') return 'gemini';
+  runStorageMigration();
+  return (localStorage.getItem(STORAGE_KEYS.ACTIVE_PROVIDER) as AIProviderId) || 'gemini';
+};
+
+const getInitialKeys = (): Record<AIProviderId, string> => {
+  if (typeof window === 'undefined') {
+    return { gemini: '', groq: '', openrouter: '', mistral: '', custom: '' };
+  }
+  runStorageMigration();
+  return {
+    gemini: localStorage.getItem(getProviderKeyStorageName('gemini')) || localStorage.getItem(STORAGE_KEYS.GEMINI_API_KEY) || '',
+    groq: localStorage.getItem(getProviderKeyStorageName('groq')) || '',
+    openrouter: localStorage.getItem(getProviderKeyStorageName('openrouter')) || '',
+    mistral: localStorage.getItem(getProviderKeyStorageName('mistral')) || '',
+    custom: localStorage.getItem(getProviderKeyStorageName('custom')) || ''
+  };
+};
+
+const getInitialModels = (): Record<AIProviderId, string> => {
+  if (typeof window === 'undefined') {
+    return {
+      gemini: 'gemini-3.8-flash',
+      groq: 'llama-3.3-70b-versatile',
+      openrouter: 'meta-llama/llama-3.3-70b-instruct:free',
+      mistral: 'codestral-latest',
+      custom: 'gpt-4o-mini'
+    };
+  }
+  runStorageMigration();
+  const rawGeminiModel = localStorage.getItem(getProviderModelStorageName('gemini')) || localStorage.getItem(STORAGE_KEYS.GEMINI_MODEL) || 'gemini-3.8-flash';
+  const cleanGemini = rawGeminiModel.includes('2.5') ? 'gemini-3.8-flash' : rawGeminiModel;
+
+  return {
+    gemini: cleanGemini,
+    groq: localStorage.getItem(getProviderModelStorageName('groq')) || 'llama-3.3-70b-versatile',
+    openrouter: localStorage.getItem(getProviderModelStorageName('openrouter')) || 'meta-llama/llama-3.3-70b-instruct:free',
+    mistral: localStorage.getItem(getProviderModelStorageName('mistral')) || 'codestral-latest',
+    custom: localStorage.getItem(getProviderModelStorageName('custom')) || 'gpt-4o-mini'
+  };
+};
+
+const initialKeys = getInitialKeys();
+const initialModels = getInitialModels();
+const initialProvider = getInitialProvider();
 
 export const useAppStore = create<AppStore>((set, get) => ({
   // Theme defaults to dark as requested
@@ -157,21 +221,60 @@ export const useAppStore = create<AppStore>((set, get) => ({
   addChatMessage: (msg) => set((state) => ({ chatMessages: [...state.chatMessages, msg] })),
   clearChat: () => set({ chatMessages: [] }),
 
-  // Gemini Settings
-  geminiApiKey: '',
-  geminiModel: 'gemini-2.5-flash',
-  setGeminiApiKey: (geminiApiKey) => {
+  // Multi-Provider AI Settings
+  activeProvider: initialProvider,
+  setActiveProvider: (activeProvider) => {
     if (typeof window !== 'undefined') {
       runStorageMigration();
-      localStorage.setItem(STORAGE_KEYS.GEMINI_API_KEY, geminiApiKey);
+      localStorage.setItem(STORAGE_KEYS.ACTIVE_PROVIDER, activeProvider);
     }
-    set({ geminiApiKey });
+    set({ activeProvider });
   },
-  setGeminiModel: (geminiModel) => {
+
+  providerKeys: initialKeys,
+  setProviderKey: (provider, key) => {
+    const trimmed = key.trim();
     if (typeof window !== 'undefined') {
       runStorageMigration();
-      localStorage.setItem(STORAGE_KEYS.GEMINI_MODEL, geminiModel);
+      localStorage.setItem(getProviderKeyStorageName(provider), trimmed);
+      if (provider === 'gemini') {
+        localStorage.setItem(STORAGE_KEYS.GEMINI_API_KEY, trimmed);
+      }
     }
-    set({ geminiModel });
-  }
+    set((state) => ({
+      providerKeys: { ...state.providerKeys, [provider]: trimmed },
+      ...(provider === 'gemini' ? { geminiApiKey: trimmed } : {})
+    }));
+  },
+
+  providerModels: initialModels,
+  setProviderModel: (provider, model) => {
+    const clean = provider === 'gemini' && model.includes('2.5') ? 'gemini-3.8-flash' : model;
+    if (typeof window !== 'undefined') {
+      runStorageMigration();
+      localStorage.setItem(getProviderModelStorageName(provider), clean);
+      if (provider === 'gemini') {
+        localStorage.setItem(STORAGE_KEYS.GEMINI_MODEL, clean);
+      }
+    }
+    set((state) => ({
+      providerModels: { ...state.providerModels, [provider]: clean },
+      ...(provider === 'gemini' ? { geminiModel: clean } : {})
+    }));
+  },
+
+  customBaseUrl: typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.CUSTOM_BASE_URL) || 'https://api.openai.com/v1' : 'https://api.openai.com/v1',
+  setCustomBaseUrl: (customBaseUrl) => {
+    const trimmed = customBaseUrl.trim();
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(STORAGE_KEYS.CUSTOM_BASE_URL, trimmed);
+    }
+    set({ customBaseUrl: trimmed });
+  },
+
+  // Backward-compatible Gemini getters/setters
+  geminiApiKey: initialKeys.gemini,
+  geminiModel: initialModels.gemini,
+  setGeminiApiKey: (key) => get().setProviderKey('gemini', key),
+  setGeminiModel: (model) => get().setProviderModel('gemini', model)
 }));

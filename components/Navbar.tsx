@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { Logo } from '@/components/Logo';
+import { PWAInstallButton } from '@/components/pwa/PWAInstallButton';
 
 export function Navbar() {
   const pathname = usePathname();
@@ -74,7 +75,10 @@ export function Navbar() {
       </div>
 
       {/* Zone 3: Actions */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2.5">
+        {/* PWA In-App Install Button */}
+        <PWAInstallButton />
+
         {/* Theme Toggle */}
         <button
           onClick={toggleTheme}

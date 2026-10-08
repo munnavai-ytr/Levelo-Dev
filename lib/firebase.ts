@@ -12,6 +12,8 @@ import {
 } from 'firebase/auth';
 import { 
   getFirestore, 
+  initializeFirestore,
+  persistentLocalCache,
   type Firestore, 
   collection, 
   doc, 
@@ -23,6 +25,7 @@ import {
   query, 
   where, 
   orderBy,
+  limit,
   serverTimestamp,
   FieldPath,
   deleteField,
@@ -56,13 +59,24 @@ let auth: Auth | null = null;
 let db: Firestore | null = null;
 let googleProvider: GoogleAuthProvider | null = null;
 
-if (isFirebaseConfigured && typeof window !== 'undefined') {
+if (isFirebaseConfigured) {
   try {
     app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-    auth = getAuth(app);
-    db = getFirestore(app);
-    googleProvider = new GoogleAuthProvider();
-    googleProvider.setCustomParameters({ prompt: 'select_account' });
+    if (typeof window !== 'undefined') {
+      auth = getAuth(app);
+      googleProvider = new GoogleAuthProvider();
+      googleProvider.setCustomParameters({ prompt: 'select_account' });
+      try {
+        db = initializeFirestore(app, {
+          localCache: persistentLocalCache({})
+        });
+      } catch {
+        db = getFirestore(app);
+      }
+    } else {
+      // Server-side initialization (for /play/[slug] etc.)
+      db = getFirestore(app);
+    }
   } catch (err) {
     console.error('Failed to initialize Firebase SDK:', err);
   }
@@ -183,7 +197,8 @@ export async function fetchUserProjects(ownerId: string): Promise<GameProject[]>
       const q = query(
         projectsRef,
         where('ownerId', '==', ownerId),
-        orderBy('updatedAt', 'desc')
+        orderBy('updatedAt', 'desc'),
+        limit(40)
       );
       const snapshot = await getDocs(q);
       const results: GameProject[] = [];
@@ -214,20 +229,36 @@ export async function fetchProjectById(id: string): Promise<GameProject | null> 
   if (isFirebaseConfigured && db) {
     try {
       const docRef = doc(db, 'projects', id);
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        const data = snap.data();
-        return {
-          id: snap.id,
-          ownerId: data.ownerId,
-          title: data.title || 'Untitled Game',
-          files: data.files || { 'index.html': DEFAULT_PHASER_STARTER },
-          chatMessages: data.chatMessages || [],
-          thumbnail: data.thumbnail || undefined,
-          createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt || new Date().toISOString(),
-          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt || new Date().toISOString()
-        };
-      }
+      const serverFetchPromise = getDoc(docRef).then((snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          const proj: GameProject = {
+            id: snap.id,
+            ownerId: data.ownerId,
+            title: data.title || 'Untitled Game',
+            files: data.files || { 'index.html': DEFAULT_PHASER_STARTER },
+            chatMessages: data.chatMessages || [],
+            thumbnail: data.thumbnail || undefined,
+            createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt || new Date().toISOString(),
+            updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt || new Date().toISOString()
+          };
+          if (typeof window !== 'undefined') {
+            localProjects.save(proj);
+          }
+          return proj;
+        }
+        return null;
+      });
+
+      // Fall back to local cache after 1.2s if server is slow
+      let timer: NodeJS.Timeout;
+      const timeoutPromise = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), 1200);
+      });
+
+      const result = await Promise.race([serverFetchPromise, timeoutPromise]);
+      clearTimeout(timer!);
+      if (result) return result;
     } catch (err) {
       console.warn('Firestore getDoc failed, fallback to local storage:', err);
     }
@@ -271,24 +302,24 @@ export async function createNewProject(
     updatedAt: new Date().toISOString()
   };
 
+  // Optimistic save to local cache
+  localProjects.save(newProject);
+
+  // Background async write to Firestore without awaiting server
   if (isFirebaseConfigured && db) {
-    try {
-      const docRef = doc(db, 'projects', newProject.id);
-      await setDoc(docRef, {
-        ownerId: newProject.ownerId,
-        title: newProject.title,
-        files: newProject.files,
-        chatMessages: newProject.chatMessages,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
-      return newProject;
-    } catch (err) {
-      console.error('Failed to create project in Firestore:', err);
-    }
+    const docRef = doc(db, 'projects', newProject.id);
+    setDoc(docRef, {
+      ownerId: newProject.ownerId,
+      title: newProject.title,
+      files: newProject.files,
+      chatMessages: newProject.chatMessages,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }).catch((err) => {
+      console.warn('Background Firestore setDoc failed:', err);
+    });
   }
 
-  localProjects.save(newProject);
   return newProject;
 }
 

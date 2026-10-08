@@ -161,30 +161,49 @@ export default function WorkspacePage() {
     }
   }, [user, isAuthLoading, router]);
 
-  // Load project by ID and project assets
+  // Load project by ID first (fast/optimistic), then assets in background
   useEffect(() => {
     let active = true;
     async function load() {
       if (!projectId) return;
       try {
-        const [proj, assetsList] = await Promise.all([
-          fetchProjectById(projectId),
-          fetchProjectAssets(projectId).catch(() => [])
-        ]);
-        if (active) {
-          if (proj) {
-            setCurrentProject(proj);
-            setTitleInput(proj.title);
-            if (proj.chatMessages && proj.chatMessages.length > 0) {
-              useAppStore.setState({ chatMessages: proj.chatMessages });
+        const proj = await fetchProjectById(projectId);
+        if (!active) return;
+
+        if (proj) {
+          setCurrentProject(proj);
+          setTitleInput(proj.title);
+          if (proj.chatMessages && proj.chatMessages.length > 0) {
+            useAppStore.setState({ chatMessages: proj.chatMessages });
+          }
+          setLoading(false);
+
+          // Check if user provided an initial prompt in "New Game"
+          if (typeof window !== 'undefined') {
+            const initKey = `levelo_init_prompt_${proj.id}`;
+            const initPrompt = sessionStorage.getItem(initKey);
+            if (initPrompt && initPrompt.trim()) {
+              sessionStorage.removeItem(initKey);
+              setTimeout(() => {
+                setExternalPromptTrigger({
+                  prompt: initPrompt.trim(),
+                  timestamp: Date.now()
+                });
+              }, 100);
             }
-          } else {
-            showToast('Project not found', 'error');
-            router.push('/dashboard');
           }
-          if (assetsList) {
-            setProjectAssets(assetsList);
-          }
+
+          // Load assets in the background without blocking project view
+          fetchProjectAssets(projectId)
+            .then((assetsList) => {
+              if (active && assetsList) {
+                setProjectAssets(assetsList);
+              }
+            })
+            .catch(() => {});
+        } else {
+          showToast('Project not found', 'error');
+          router.push('/dashboard');
           setLoading(false);
         }
       } catch (err) {
@@ -683,7 +702,7 @@ export default function WorkspacePage() {
           authorName={user?.displayName || user?.email?.split('@')[0] || 'Game Creator'}
           onOpenShare={(published) => {
             setActiveShareGame(published);
-            setIsShareOpen(true);
+            setIsShareModalOpen(true);
           }}
         />
       )}
@@ -691,9 +710,9 @@ export default function WorkspacePage() {
       {/* Share Modal */}
       {activeShareGame && (
         <ShareModal
-          isOpen={isShareOpen}
+          isOpen={isShareModalOpen}
           onClose={() => {
-            setIsShareOpen(false);
+            setIsShareModalOpen(false);
             setActiveShareGame(null);
           }}
           publishedGame={activeShareGame}

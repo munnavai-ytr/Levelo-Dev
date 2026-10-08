@@ -425,20 +425,14 @@ canvas {
     }
     for (let obs of obstacles) {
       ctx.fillStyle = obs.color;
-      ctx.shadowColor = obs.color;
-      ctx.shadowBlur = 10;
-      ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
-      ctx.shadowBlur = 0;
-    }
+ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+}
     if (!isGameOver) {
       ctx.fillStyle = '#38bdf8';
-      ctx.shadowColor = '#38bdf8';
-      ctx.shadowBlur = 12;
-      ctx.fillRect(player.x, player.y, player.width, player.height);
+ctx.fillRect(player.x, player.y, player.width, player.height);
       ctx.fillStyle = '#f43f5e';
       ctx.fillRect(player.x + 18, player.y + 8, 12, 6);
-      ctx.shadowBlur = 0;
-    }
+}
     for (let p of particles) {
       ctx.fillStyle = p.color;
       ctx.fillRect(p.x, p.y, 3, 3);
@@ -459,11 +453,24 @@ canvas {
     }
   }
 
-  function loop() {
-    update();
+  let lastTime = performance.now();
+  const step = 1000 / 60;
+  let accumulator = 0;
+
+  function loop(currentTime) {
+    if (!currentTime) currentTime = performance.now();
+    const elapsed = Math.min(currentTime - lastTime, 100);
+    lastTime = currentTime;
+    accumulator += elapsed;
+
+    while (accumulator >= step) {
+      update();
+      accumulator -= step;
+    }
     draw();
     requestAnimationFrame(loop);
   }
+
   requestAnimationFrame(loop);
 })();`
     }
@@ -1102,11 +1109,24 @@ canvas {
     }
   }
 
-  function loop() {
-    update();
+  let lastTime = performance.now();
+  const step = 1000 / 60;
+  let accumulator = 0;
+
+  function loop(currentTime) {
+    if (!currentTime) currentTime = performance.now();
+    const elapsed = Math.min(currentTime - lastTime, 100);
+    lastTime = currentTime;
+    accumulator += elapsed;
+
+    while (accumulator >= step) {
+      update();
+      accumulator -= step;
+    }
     draw();
     requestAnimationFrame(loop);
   }
+
   requestAnimationFrame(loop);
 })();`
     }

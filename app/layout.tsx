@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { ToastProvider } from '@/components/Toast';
 import { CloudSyncBanner } from '@/components/CloudSyncBanner';
@@ -6,12 +6,28 @@ import { NetworkStatusIndicator } from '@/components/NetworkStatusIndicator';
 import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
 import { WebVitals } from '@/app/web-vitals';
 
+export const viewport: Viewport = {
+  themeColor: '#090d16',
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+};
+
 export const metadata: Metadata = {
   title: {
     default: 'Levelo - AI Game Builder',
     template: '%s | Levelo',
   },
   description: 'Describe your game. Levelo builds it. Play it instantly.',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'default',
+    title: 'Levelo',
+  },
+  icons: {
+    icon: '/icon.svg',
+    apple: '/apple-touch-icon.png',
+  },
   openGraph: {
     title: 'Levelo - AI Game Builder',
     description: 'Describe your game. Levelo builds it. Play it instantly.',

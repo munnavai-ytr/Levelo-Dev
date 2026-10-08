@@ -1,6 +1,6 @@
 {
-  "name": "GameForge AI",
-  "description": "AI-powered web game builder with live sandboxed preview, Monaco code editor, and Firebase project management.",
+  "name": "Levelo",
+  "description": "AI-powered web game builder with live sandboxed preview, Monaco code editor, and cloud persistence.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

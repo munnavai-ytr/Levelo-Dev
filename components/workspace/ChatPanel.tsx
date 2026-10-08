@@ -30,8 +30,10 @@ import {
   Plus,
   Minus,
   HelpCircle,
-  Layers
+  Layers,
+  ExternalLink
 } from 'lucide-react';
+import { AI_PROVIDERS_CONFIG, PROVIDER_IDS, type AIProviderId } from '@/lib/providers';
 
 export const PROMPT_IDEAS = [
   { label: '🚀 Space Shooter', prompt: 'Build a vertical scrolling space shooter with player laser cannons, incoming alien waves, starfield parallax, and explosion effects.' },
@@ -304,11 +306,23 @@ export function ChatPanel({
   onVersionCreated,
   externalPromptTrigger
 }: ChatPanelProps) {
-  const { chatMessages, addChatMessage, clearChat, geminiModel, setMobileTab } = useAppStore();
+  const { 
+    chatMessages, 
+    addChatMessage, 
+    clearChat, 
+    setMobileTab,
+    activeProvider,
+    setActiveProvider,
+    providerKeys,
+    providerModels,
+    setProviderModel,
+    customBaseUrl
+  } = useAppStore();
   const { showToast } = useToast();
 
   const [input, setInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isProviderMenuOpen, setIsProviderMenuOpen] = useState(false);
   const [buildStep, setBuildStep] = useState<'idle' | 'planning' | 'writing' | 'applying'>('idle');
   const [lastFailedPrompt, setLastFailedPrompt] = useState<string | null>(null);
 
@@ -375,7 +389,9 @@ export function ChatPanel({
       }
 
       runStorageMigration();
-      const apiKey = localStorage.getItem(STORAGE_KEYS.GEMINI_API_KEY) || '';
+      const currentProvider = activeProvider || 'gemini';
+      const activeKey = providerKeys[currentProvider] || (currentProvider === 'gemini' ? (localStorage.getItem(STORAGE_KEYS.GEMINI_API_KEY) || '') : '');
+      const currentModel = providerModels[currentProvider] || AI_PROVIDERS_CONFIG[currentProvider]?.defaultModel || 'gemini-3.8-flash';
 
       const userMessage = createMessageItem('user', promptText);
       addChatMessage(userMessage);
@@ -397,7 +413,7 @@ export function ChatPanel({
         timestamp: Date.now(),
         status: 'planning',
         tags: [
-          geminiModel || 'gemini-2.5-flash',
+          `${AI_PROVIDERS_CONFIG[currentProvider]?.name || currentProvider}: ${currentModel}`,
           ...(isAutoFixLoop ? [`Auto-fix ${autoFixAttempt + 1}/3`] : [])
         ]
       };
@@ -416,11 +432,14 @@ export function ChatPanel({
           content: m.content
         }));
 
-        const response = await fetch('/api/generate', {
+        const response = await fetch('/api/ai/generate', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...(apiKey ? { 'x-gemini-key': apiKey } : {})
+            'x-ai-provider': currentProvider,
+            'x-ai-key': activeKey,
+            'x-ai-base-url': customBaseUrl || '',
+            'x-ai-keys': JSON.stringify(providerKeys)
           },
           body: JSON.stringify({
             messages: conversationHistory,
@@ -434,7 +453,8 @@ export function ChatPanel({
               width: a.width,
               height: a.height
             })),
-            model: geminiModel || 'gemini-2.5-flash',
+            provider: currentProvider,
+            model: currentModel,
             errorContext: errorContextOverride || undefined
           }),
           signal: abortController.signal
@@ -443,8 +463,8 @@ export function ChatPanel({
         if (!response.ok) {
           const errData = await response.json().catch(() => ({}));
           const errMsg = errData.error || `Server responded with status ${response.status}`;
-          const isInvalidKey = response.status === 401 || errData.code === 'API_KEY_MISSING' || errData.code === 'INVALID_KEY';
-          const isRateLimit = response.status === 429 || errData.code === 'RATE_LIMIT';
+          const isInvalidKey = response.status === 401 || errData.code === 'invalid_key';
+          const isRateLimit = response.status === 429 || errData.code === 'rate_limit';
 
           useAppStore.setState((state) => ({
             chatMessages: state.chatMessages.map((m) =>
@@ -452,9 +472,9 @@ export function ChatPanel({
                 ? {
                     ...m,
                     content: isInvalidKey
-                      ? 'Gemini API Key missing or invalid. Please configure your key in Settings.'
+                      ? `${AI_PROVIDERS_CONFIG[currentProvider]?.name} API key missing or invalid. Please configure your key in Settings.`
                       : isRateLimit
-                      ? 'Gemini API quota exceeded. Please wait a moment and try again.'
+                      ? `${AI_PROVIDERS_CONFIG[currentProvider]?.name} quota exceeded. Please wait a moment and try again.`
                       : errMsg,
                     status: 'error',
                     errorType: isInvalidKey ? 'missing_key' : isRateLimit ? 'rate_limit' : 'generic'
@@ -526,9 +546,21 @@ export function ChatPanel({
               if (data.type === 'chunk' && data.text) {
                 accumulatedText += data.text;
                 flushStoreUpdate();
+              } else if (data.type === 'status' && (data.status === 'switching' || data.status === 'retrying')) {
+                const statusMsg = data.message || (data.status === 'retrying' ? 'Model busy, retrying...' : `Switching to ${data.provider}/${data.model}...`);
+                useAppStore.setState((state) => ({
+                  chatMessages: state.chatMessages.map((m) =>
+                    m.id === assistantMsgId
+                      ? {
+                          ...m,
+                          tags: Array.from(new Set([...(m.tags || []), statusMsg]))
+                        }
+                      : m
+                  )
+                }));
               } else if (data.type === 'error') {
-                const isRateLimit = data.status === 429 || data.code === 'RATE_LIMIT';
-                const isInvalidKey = data.status === 401 || data.code === 'INVALID_KEY';
+                const isRateLimit = data.status === 429 || data.code === 'rate_limit';
+                const isInvalidKey = data.status === 401 || data.code === 'invalid_key';
 
                 useAppStore.setState((state) => ({
                   chatMessages: state.chatMessages.map((m) =>
@@ -765,15 +797,104 @@ export function ChatPanel({
   return (
     <div className="flex flex-col h-full bg-slate-950 border-r border-slate-800/80 select-none overflow-hidden relative">
       {/* Chat Header */}
-      <div className="h-11 border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-sm px-3 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 rounded-md bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 flex items-center justify-center">
+      <div className="h-11 border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-sm px-3 flex items-center justify-between shrink-0 relative">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-6 h-6 rounded-md bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 flex items-center justify-center shrink-0">
             <Sparkles className="w-3.5 h-3.5" />
           </div>
-          <span className="text-xs font-semibold text-slate-200">Levelo AI Assistant</span>
-          <span className="hidden sm:inline px-1.5 py-0.5 rounded text-[10px] font-mono bg-indigo-950/60 border border-indigo-800/60 text-indigo-300">
-            {geminiModel || 'gemini-2.5-flash'}
-          </span>
+          <span className="text-xs font-semibold text-slate-200 hidden sm:inline truncate">Levelo AI</span>
+
+          {/* Active Provider + Model Selector Dropdown Button */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsProviderMenuOpen(!isProviderMenuOpen)}
+              className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-950/80 hover:bg-slate-900 hover:border-indigo-500/60 text-slate-200 text-[11px] font-mono flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Change active AI provider or model"
+            >
+              <span className="text-indigo-400 font-semibold">{AI_PROVIDERS_CONFIG[activeProvider || 'gemini']?.name}:</span>
+              <span className="truncate max-w-[120px] sm:max-w-[160px]">
+                {providerModels[activeProvider || 'gemini'] || AI_PROVIDERS_CONFIG[activeProvider || 'gemini']?.defaultModel}
+              </span>
+              <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform ${isProviderMenuOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {/* Provider and Model Quick Selector Menu */}
+            {isProviderMenuOpen && (
+              <div 
+                className="absolute left-0 top-full mt-1.5 w-72 sm:w-80 rounded-xl bg-slate-900 border border-slate-700 shadow-2xl p-3 z-50 animate-in fade-in zoom-in-95 duration-100 space-y-3"
+              >
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] font-semibold text-slate-300">AI Provider</span>
+                    <a
+                      href="/settings"
+                      className="text-[10px] text-indigo-400 hover:text-indigo-300 hover:underline flex items-center gap-0.5"
+                    >
+                      <span>Settings & Keys</span>
+                      <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1">
+                    {PROVIDER_IDS.map((pId) => {
+                      const conf = AI_PROVIDERS_CONFIG[pId];
+                      const isSelected = (activeProvider || 'gemini') === pId;
+                      const hasKey = Boolean(providerKeys[pId]);
+
+                      return (
+                        <button
+                          key={pId}
+                          type="button"
+                          onClick={() => {
+                            setActiveProvider(pId);
+                            showToast(`Switched engine to ${conf.name}`, 'info');
+                          }}
+                          className={`p-1.5 rounded-lg text-left text-[11px] border transition-colors flex items-center justify-between cursor-pointer ${
+                            isSelected
+                              ? 'border-indigo-500 bg-indigo-950/60 text-indigo-300 font-semibold'
+                              : 'border-slate-800 bg-slate-950 hover:bg-slate-800/80 text-slate-300'
+                          }`}
+                        >
+                          <span className="truncate">{conf.name}</span>
+                          {hasKey && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 ml-1" title="Key saved" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    Model for {AI_PROVIDERS_CONFIG[activeProvider || 'gemini']?.name}
+                  </label>
+                  <select
+                    value={providerModels[activeProvider || 'gemini'] || AI_PROVIDERS_CONFIG[activeProvider || 'gemini']?.defaultModel}
+                    onChange={(e) => {
+                      setProviderModel(activeProvider || 'gemini', e.target.value);
+                      showToast(`Model set to ${e.target.value}`, 'info');
+                    }}
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                  >
+                    {(AI_PROVIDERS_CONFIG[activeProvider || 'gemini']?.presetModels || []).map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} ({m.id}){m.isFree ? ' [Free]' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {!providerKeys[activeProvider || 'gemini'] && activeProvider !== 'custom' && (
+                  <div className="p-2 rounded-lg bg-amber-950/40 border border-amber-700/50 text-[10px] text-amber-300 flex items-center justify-between">
+                    <span>No API key set for {AI_PROVIDERS_CONFIG[activeProvider || 'gemini']?.name}</span>
+                    <a href="/settings" className="font-semibold underline ml-1 hover:text-white">
+                      Add Key
+                    </a>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <button

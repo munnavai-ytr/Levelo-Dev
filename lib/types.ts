@@ -98,5 +98,33 @@ export interface GameTemplate {
   description: string;
   tags: string[];
   genre: string;
+  dimension?: '2d' | '3d';
   files: ProjectFiles;
+}
+
+export interface PublishedGame {
+  slug: string;
+  projectId: string;
+  ownerId: string;
+  title: string;
+  description: string;
+  authorName: string;
+  thumbnail?: string;
+  files: ProjectFiles;
+  bundledHtml: string;
+  plays: number;
+  isPublic: boolean;
+  size: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GameReport {
+  id: string;
+  slug: string;
+  gameTitle?: string | null;
+  reason: string;
+  details?: string | null;
+  reporterId?: string | null;
+  createdAt: any;
 }

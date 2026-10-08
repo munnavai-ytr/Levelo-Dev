@@ -201,15 +201,22 @@ export function NewProjectModal({ isOpen, onClose, onCreate }: NewProjectModalPr
                           : 'border-slate-800 bg-slate-950/60 hover:bg-slate-950 hover:border-slate-700'
                       }`}
                     >
-                      {/* Live Mini Preview Iframe */}
-                      <div className="relative w-full h-32 rounded-lg overflow-hidden bg-slate-950 border border-slate-800 mb-2.5">
-                        <iframe
-                          title={tmpl.name}
-                          srcDoc={bundledCode}
-                          sandbox="allow-scripts"
-                          className="w-full h-full pointer-events-none border-0 scale-90 origin-top"
-                          loading="lazy"
-                        />
+                      {/* Live Mini Preview Iframe - only runs when selected */}
+                      <div className="relative w-full h-32 rounded-lg overflow-hidden bg-slate-950 border border-slate-800 mb-2.5 flex items-center justify-center">
+                        {isSelected ? (
+                          <iframe
+                            title={tmpl.name}
+                            srcDoc={bundledCode}
+                            sandbox="allow-scripts"
+                            className="w-full h-full pointer-events-none border-0 scale-90 origin-top"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="flex flex-col items-center justify-center gap-1 text-slate-500">
+                            <Gamepad2 className="w-5 h-5 text-slate-600" />
+                            <span className="text-[10px] text-slate-500 font-mono">Click to preview</span>
+                          </div>
+                        )}
                         <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-slate-900/90 border border-slate-700 text-[10px] text-indigo-300 font-mono">
                           {tmpl.genre}
                         </div>

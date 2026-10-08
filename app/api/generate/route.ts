@@ -34,7 +34,29 @@ CRITICAL GAME REQUIREMENTS:
 3. Scoring & State: Clear Score, High Score, Game Over screen, and instant Restart trigger (e.g. press Space or tap button to restart).
 4. Responsive Canvas: Use Phaser Scale.FIT with autoCenter: Phaser.Scale.CENTER_BOTH, or Three.js window resize handlers, so it adapts to any screen or device aspect ratio.
 5. Built-in Synthesized WebAudio SFX: Synthesize fun arcade sound effects (jump, pickup, hit, shoot, game over) using the browser WebAudio API (AudioContext) directly in code or use available project audio assets (e.g. this.load.audio('sfx', 'assets/sfx.wav')).
-6. Using Project Assets: When project assets are listed in [AVAILABLE PROJECT ASSETS], load and use them directly in the game (e.g., this.load.image('hero', 'assets/hero.webp'), this.load.audio('jump', 'assets/jump.wav')). When no matching asset exists, fall back to procedural graphics using Phaser canvas graphics (e.g. this.make.graphics().generateTexture()) or Three.js geometry/materials. DO NOT load untrusted external third-party image URLs.`;
+6. Using Project Assets: When project assets are listed in [AVAILABLE PROJECT ASSETS], load and use them directly in the game (e.g., this.load.image('hero', 'assets/hero.webp'), this.load.audio('jump', 'assets/jump.wav')). When no matching asset exists, fall back to procedural graphics using Phaser canvas graphics (e.g. this.make.graphics().generateTexture()) or Three.js geometry/materials. DO NOT load untrusted external third-party image URLs.
+
+CRITICAL PERFORMANCE RULES:
+- NEVER use ctx.shadowBlur or expensive continuous canvas glow effects (causes massive frame rate drops).
+- ALWAYS use a fixed 60Hz delta time / accumulator game loop so the game runs at the exact same speed on 60Hz, 120Hz, and high-refresh displays.
+- Keep canvas textures lightweight and clean. Avoid unnecessary object creation inside the update loop to prevent garbage collection pauses.
+- Target silky-smooth 60 FPS gameplay on all devices.`;
+
+function sanitizeModel(m?: string): string {
+  if (!m) return 'gemini-3.8-flash';
+  const clean = m.trim().replace(/^models\//, '');
+  if (
+    clean === 'gemini-2.5-flash' ||
+    clean.includes('2.5') ||
+    clean.includes('2.0') ||
+    clean.includes('1.5') ||
+    clean === 'gemini-flash' ||
+    clean === 'gemini-pro'
+  ) {
+    return 'gemini-3.8-flash';
+  }
+  return clean;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -54,7 +76,14 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { messages = [], files = {}, assets = [], model = 'gemini-2.5-flash', errorContext } = body;
+    const { 
+      messages = [], 
+      files = {}, 
+      assets = [], 
+      model = 'gemini-3.8-flash', 
+      fallbackModels = [],
+      errorContext 
+    } = body;
 
     // Initialize Google GenAI client
     const ai = new GoogleGenAI({
@@ -102,7 +131,6 @@ export async function POST(req: NextRequest) {
           parts: [{ text: msg.content }]
         });
       } else if (msg.role === 'assistant') {
-        // Strip fenced code blocks from previous assistant messages: replace with [code omitted]
         const strippedContent = msg.content.replace(/```[\s\S]*?```/g, '[code omitted]');
         contents.push({
           role: 'model',
@@ -120,7 +148,7 @@ export async function POST(req: NextRequest) {
       userPrompt = `[RUNTIME ERROR IN PREVIEW]\nError: ${errorContext.message || errorContext}\n${errorContext.stack ? 'Stack: ' + errorContext.stack : ''}\n\nPlease inspect the code, diagnose the bug, and provide the fixed code for the affected file(s).\n\nUser instructions: ${userPrompt}`;
     }
 
-    // Embed current code and asset manifest into user turn so model can mutate existing code
+    // Embed current code and asset manifest into user turn
     const fullLatestUserText = `[CURRENT PROJECT FILES]${filesContext}${assetsContext}\n\n[USER REQUEST]\n${userPrompt}`;
 
     contents.push({
@@ -128,53 +156,27 @@ export async function POST(req: NextRequest) {
       parts: [{ text: fullLatestUserText }]
     });
 
-    const modelName = model || 'gemini-2.5-flash';
-    const isFlash = modelName.toLowerCase().includes('flash') && !modelName.toLowerCase().includes('lite');
-
-    const baseConfig: any = {
-      systemInstruction: SYSTEM_INSTRUCTION,
-      maxOutputTokens: 8192,
-    };
-
-    // Stream the response using generateContentStream
-    // For flash models (not lite), test with thinkingBudget: 0 to accelerate responses
-    let responseStream: any;
-    if (isFlash) {
-      try {
-        responseStream = await ai.models.generateContentStream({
-          model: modelName,
-          contents,
-          config: {
-            ...baseConfig,
-            thinkingConfig: { thinkingBudget: 0 },
-          }
-        });
-      } catch (err: any) {
-        // Retry once without thinkingConfig if rejected by model API
-        console.warn('thinkingConfig 0 rejected, retrying with standard config:', err?.message);
-        responseStream = await ai.models.generateContentStream({
-          model: modelName,
-          contents,
-          config: baseConfig
-        });
-      }
-    } else {
-      responseStream = await ai.models.generateContentStream({
-        model: modelName,
-        contents,
-        config: baseConfig
-      });
-    }
+    const primaryModel = sanitizeModel(model);
+    const sanitizedFallbacks = (Array.isArray(fallbackModels) ? fallbackModels : []).map(sanitizeModel);
+    
+    // Ordered candidate models to attempt
+    const modelCandidates = Array.from(new Set([
+      primaryModel,
+      ...sanitizedFallbacks,
+      'gemini-3.8-flash',
+      'gemini-3.1-pro-preview',
+      'gemini-3.1-flash-lite'
+    ])).filter(Boolean);
 
     // Create ReadableStream for SSE
     const stream = new ReadableStream({
       async start(controller) {
         const encoder = new TextEncoder();
+        const sendEvent = (obj: any) => {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+        };
 
-        // Send immediate status event
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ type: 'status', status: 'connected' })}\n\n`)
-        );
+        sendEvent({ type: 'status', status: 'connected', model: primaryModel });
 
         // Keep proxies alive with heartbeat comment every 15s
         const heartbeatInterval = setInterval(() => {
@@ -185,7 +187,6 @@ export async function POST(req: NextRequest) {
           }
         }, 15000);
 
-        // Abort upstream generation when client disconnects
         let isAborted = false;
         const abortHandler = () => {
           isAborted = true;
@@ -196,33 +197,108 @@ export async function POST(req: NextRequest) {
         };
         req.signal.addEventListener('abort', abortHandler);
 
+        let responseStream: any = null;
+        let successfulModel = primaryModel;
+
+        // Try candidate models with retry on 503/overload
+        for (let mIdx = 0; mIdx < modelCandidates.length; mIdx++) {
+          if (isAborted || req.signal.aborted) break;
+          const currentCandidate = modelCandidates[mIdx];
+
+          if (mIdx > 0) {
+            sendEvent({
+              type: 'status',
+              status: 'switching',
+              message: `Switching to fallback model: ${currentCandidate}...`,
+              model: currentCandidate
+            });
+          }
+
+          let attempt = 0;
+          const maxAttempts = 2;
+
+          while (attempt < maxAttempts) {
+            if (isAborted || req.signal.aborted) break;
+            attempt++;
+
+            try {
+              responseStream = await ai.models.generateContentStream({
+                model: currentCandidate,
+                contents,
+                config: {
+                  systemInstruction: SYSTEM_INSTRUCTION,
+                  maxOutputTokens: 8192,
+                }
+              });
+              successfulModel = currentCandidate;
+              break;
+            } catch (err: any) {
+              const errMsg = String(err?.message || '');
+              const status = err?.status || err?.code || 500;
+              const isOverloaded = status === 503 || errMsg.includes('503') || errMsg.includes('overloaded') || errMsg.includes('UNAVAILABLE') || errMsg.includes('high demand');
+
+              if (isOverloaded && attempt < maxAttempts) {
+                sendEvent({
+                  type: 'status',
+                  status: 'retrying',
+                  message: `Model ${currentCandidate} is busy, retrying in 1s (attempt ${attempt}/${maxAttempts})...`,
+                  model: currentCandidate
+                });
+                await new Promise((r) => setTimeout(r, 1000));
+                continue;
+              }
+
+              console.warn(`Model ${currentCandidate} failed (attempt ${attempt}):`, errMsg);
+              break;
+            }
+          }
+
+          if (responseStream) {
+            break;
+          }
+        }
+
+        if (!responseStream) {
+          sendEvent({
+            type: 'error',
+            error: 'All AI models are currently busy or unavailable. Please try again in a moment.',
+            code: 'SERVICE_OVERLOADED',
+            status: 503
+          });
+          clearInterval(heartbeatInterval);
+          try { controller.close(); } catch {}
+          return;
+        }
+
         try {
           for await (const chunk of responseStream) {
             if (isAborted || req.signal.aborted) break;
             const text = chunk.text;
             if (text) {
-              const payload = `data: ${JSON.stringify({ type: 'chunk', text })}\n\n`;
-              controller.enqueue(encoder.encode(payload));
+              sendEvent({ type: 'chunk', text });
             }
           }
           if (!isAborted && !req.signal.aborted) {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
+            sendEvent({ type: 'done', model: successfulModel });
           }
         } catch (streamErr: any) {
           if (!isAborted && !req.signal.aborted) {
-            const errMsg = streamErr?.message || 'Streaming failed';
-            const isRateLimit = streamErr?.status === 429 || errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RESOURCE_EXHAUSTED');
-            const isInvalidKey = streamErr?.status === 400 || streamErr?.status === 403 || errMsg.includes('API_KEY_INVALID') || errMsg.includes('API key not valid');
+            const rawMsg = streamErr?.message || 'Streaming failed';
+            let readableError = 'AI response was interrupted. Please try again.';
+            if (rawMsg.includes('429') || rawMsg.includes('quota')) {
+              readableError = 'API quota reached. Please wait a moment or check your key quota.';
+            } else if (rawMsg.includes('503') || rawMsg.includes('overload')) {
+              readableError = 'AI model is overloaded. Please try again shortly.';
+            } else if (rawMsg.includes('API_KEY')) {
+              readableError = 'Invalid API key. Please check your Gemini API key in Settings.';
+            }
 
-            const errorPayload = {
+            sendEvent({
               type: 'error',
-              error: errMsg,
-              code: isRateLimit ? 'RATE_LIMIT' : isInvalidKey ? 'INVALID_KEY' : 'GENERIC_ERROR',
-              status: isRateLimit ? 429 : isInvalidKey ? 401 : 500
-            };
-            try {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorPayload)}\n\n`));
-            } catch {}
+              error: readableError,
+              code: rawMsg.includes('429') ? 'RATE_LIMIT' : 'GENERIC_ERROR',
+              status: streamErr?.status || 500
+            });
           }
         } finally {
           clearInterval(heartbeatInterval);
@@ -243,13 +319,22 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (err: any) {
-    const errMsg = err?.message || 'Failed to initialize Gemini generation';
-    const isRateLimit = err?.status === 429 || errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RESOURCE_EXHAUSTED');
-    const isInvalidKey = err?.status === 400 || err?.status === 403 || errMsg.includes('API_KEY_INVALID') || errMsg.includes('API key not valid');
+    const rawMsg = String(err?.message || '');
+    let readableError = 'Failed to initialize Gemini generation';
+    if (rawMsg.includes('429') || rawMsg.includes('quota')) {
+      readableError = 'API quota reached. Please wait a moment or check your key quota.';
+    } else if (rawMsg.includes('503') || rawMsg.includes('overload')) {
+      readableError = 'AI model is overloaded. Please try again shortly.';
+    } else if (rawMsg.includes('API_KEY')) {
+      readableError = 'Invalid API key. Please check your Gemini API key in Settings.';
+    }
+
+    const isRateLimit = rawMsg.includes('429') || rawMsg.includes('quota');
+    const isInvalidKey = rawMsg.includes('API_KEY');
 
     return new Response(
       JSON.stringify({
-        error: errMsg,
+        error: readableError,
         code: isRateLimit ? 'RATE_LIMIT' : isInvalidKey ? 'INVALID_KEY' : 'GENERIC_ERROR'
       }),
       { 
